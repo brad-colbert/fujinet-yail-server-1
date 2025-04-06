@@ -9,6 +9,7 @@ import time
 import logging
 from tqdm import tqdm
 import socket
+import threading
 from threading import Thread, Lock
 import random
 from duckduckgo_search import DDGS
@@ -48,6 +49,7 @@ DL_BLOCK = 0x04
 XDL_BLOCK = 0x05
 PALETTE_BLOCK = 0x06
 IMAGE_BLOCK = 0x07
+ERROR_BLOCK = 0xFF
 
 
 class OpenAIConfig:
@@ -259,6 +261,23 @@ def convertToYai(image_data: bytearray, gfx_mode: int) -> bytearray:
     image_yai += bytearray(image_data)       # image
 
     return image_yai
+
+def createErrorPacket(error_message: str, gfx_mode: int) -> bytearray:
+    import struct
+
+    #ttlbytes = YAIL_W * YAIL_H; # image_data.shape[0] * image_data.shape[1]
+    logger.info(f'Error message length: {len(error_message)}')
+
+    error_packets = bytearray()
+    error_packets += bytes([1, 4, 0])                      # version
+    error_packets += bytes([gfx_mode])                     # Gfx mode (8,9)
+    error_packets += struct.pack("<B", 1)                  # number of memory blocks
+    error_packets += bytes([ERROR_BLOCK])                  # Memory block type
+    error_packets += struct.pack("<I", len(error_message)) # error message size
+    error_packets += bytearray(error_message)              # error
+
+    return error_packets
+
 
 def convertToYaiVBXE(image_data: bytes, palette_data: bytes, gfx_mode: int) -> bytearray:
     import struct
@@ -496,6 +515,8 @@ def camera_handler(gfx_mode: int) -> None:
     import pygame.camera
     import pygame.image
 
+    logger.debug(f"camera_handler thread started: {threading.get_native_id()}")
+
     SHOW_WEBCAM_VIEW = False
 
     global camera_done
@@ -557,6 +578,8 @@ def camera_handler(gfx_mode: int) -> None:
         # grab next frame    
         img = webcam.get_image()
 
+    logger.debug(f"camera_handler thread exiting {threading.get_native_id()}")
+
 def send_client_response(client_socket: socket.socket, message: str, is_error: bool = False) -> None:
     """
     Send a standardized response to the client.
@@ -568,7 +591,8 @@ def send_client_response(client_socket: socket.socket, message: str, is_error: b
     """
     prefix = "ERROR: " if is_error else "OK: "
     try:
-        client_socket.sendall(bytes(f"{prefix}{message}".encode('utf-8')))
+        message_packet = createErrorPacket(message.encode('utf-8'), gfx_mode=GRAPHICS_8) if is_error else None
+        client_socket.sendall(message_packet); #bytes(f"{prefix}{message}".encode('utf-8')))
         if is_error:
             logger.warning(f"Sent error to client: {message}")
         else:
@@ -658,6 +682,8 @@ def handle_client_connection(client_socket: socket.socket) -> None:
     global camera_done
     global YAIL_H
     global openai_config
+
+    logger.debug(f"handle_client_connection thread started: {threading.get_native_id()}")
     
     gfx_mode = GRAPHICS_8
     client_mode = None
@@ -689,14 +715,11 @@ def handle_client_connection(client_socket: socket.socket) -> None:
                 tokens.pop(0)
 
             elif tokens[0] == 'search':
-                # Redirect 'search' command to use OpenAI image generation instead of DuckDuckGo
-                client_mode = 'generate'  # Set mode to 'generate' instead of 'search'
-                prompt = ' '.join(tokens[1:])
-                # Remove quotes if present (e.g., "atari" -> atari)
-                prompt = prompt.strip('"\'')
-                last_prompt = prompt  # Store the prompt for later use with 'next' command
-                logger.info(f"Using OpenAI to generate image for prompt: '{prompt}'")
-                stream_generated_image(client_socket, prompt, gfx_mode)
+                client_mode = 'search'
+                urls = search_images(' '.join(tokens[1:]))
+                url_idx = random.randint(0, len(urls)-1)
+                url = urls[url_idx]
+                stream_random_image_from_urls(client_socket, urls, gfx_mode)
                 tokens = []
 
             elif tokens[0] == 'generate':
@@ -714,12 +737,6 @@ def handle_client_connection(client_socket: socket.socket) -> None:
 
             elif tokens[0] == 'next':
                 if client_mode == 'search':
-                    # For backward compatibility, still handle 'search' mode
-                    # If no additional search terms are provided, use a default or the last search term
-                    search_term = ' '.join(tokens[1:])
-                    if not search_term.strip():
-                        logger.info("No search term provided with 'next', using default")
-                    urls = search_images(search_term, max_images=1000)
                     stream_random_image_from_urls(client_socket, urls, gfx_mode)
                     tokens.pop(0)
                 elif client_mode == 'video':
@@ -799,7 +816,9 @@ def handle_client_connection(client_socket: socket.socket) -> None:
                 tokens.pop(0)
 
             else:
-                logger.info(f'Received {r_string.rstrip(" \r\n")}')
+                tokens = [] # reset tokens if unrecognized command
+                r_string = r_string.rstrip(" \r\n")   # strip whitespace
+                logger.info(f'Received {r_string}')
                 send_client_response(client_socket, "ACK!")
 
     except Exception as ex:
@@ -813,6 +832,8 @@ def handle_client_connection(client_socket: socket.socket) -> None:
             camera_done = True
             time.sleep(SOCKET_WAIT_TIME)
             camera_thread = None
+
+    logger.debug(f"handle_client_connection thread exiting: {threading.get_native_id()}")
 
 def process_files(input_path: Union[str, List[str]], 
                   extensions: List[str], 
