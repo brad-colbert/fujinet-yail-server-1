@@ -50,17 +50,27 @@ class ImageGenConfig:
     Provides validation and management of image generation parameters.
     """
     
-    VALID_MODELS = ["dall-e-3", "dall-e-2", "gemini"]
+    # Valid model prefixes for determining which API to use
+    OPENAI_MODEL_PREFIXES = ["dall-e-", "gpt-"]
+    GEMINI_MODEL_PREFIXES = ["gemini"]
+    
+    # Default values for configuration
+    DEFAULT_MODEL = "dall-e-3"
+    DEFAULT_SIZE = "1024x1024"
+    DEFAULT_QUALITY = "standard"
+    DEFAULT_STYLE = "vivid"
+    
+    # Valid options for OpenAI configuration
     VALID_SIZES = ["1024x1024", "1792x1024", "1024x1792"]
     VALID_QUALITIES = ["standard", "hd"]
     VALID_STYLES = ["vivid", "natural"]
     
     def __init__(self):
-        # Default settings
-        self.model = os.environ.get("GEN_MODEL", os.environ.get("OPENAI_MODEL", "dall-e-3"))
-        self.size = os.environ.get("OPENAI_SIZE", "1024x1024")
-        self.quality = os.environ.get("OPENAI_QUALITY", "standard")
-        self.style = os.environ.get("OPENAI_STYLE", "vivid")
+        # Load settings from environment variables
+        self.model = os.environ.get("GEN_MODEL", os.environ.get("OPENAI_MODEL", self.DEFAULT_MODEL))
+        self.size = os.environ.get("OPENAI_SIZE", self.DEFAULT_SIZE)
+        self.quality = os.environ.get("OPENAI_QUALITY", self.DEFAULT_QUALITY)
+        self.style = os.environ.get("OPENAI_STYLE", self.DEFAULT_STYLE)
         self.api_key = os.environ.get("OPENAI_API_KEY")
         self.system_prompt = os.environ.get("OPENAI_SYSTEM_PROMPT", "You are an image generation assistant. Generate an image based on the user's description.")
         
@@ -68,32 +78,88 @@ class ImageGenConfig:
         logger.info(f"ImageGenConfig initialized with model: {self.model}")
         
         # Validate the loaded settings
-        if self.model not in self.VALID_MODELS:
-            logger.warning(f"Invalid GEN_MODEL in environment: {self.model}. Using default: dall-e-3")
-            self.model = "dall-e-3"
+        if not self.is_valid_model(self.model):
+            logger.warning(f"Unknown model format: {self.model}. Using default: {self.DEFAULT_MODEL}")
+            self.model = self.DEFAULT_MODEL
             
         if self.size not in self.VALID_SIZES:
-            logger.warning(f"Invalid OPENAI_SIZE in environment: {self.size}. Using default: 1024x1024")
-            self.size = "1024x1024"
+            logger.warning(f"Invalid OPENAI_SIZE in environment: {self.size}. Using default: {self.DEFAULT_SIZE}")
+            self.size = self.DEFAULT_SIZE
             
         if self.quality not in self.VALID_QUALITIES:
-            logger.warning(f"Invalid OPENAI_QUALITY in environment: {self.quality}. Using default: standard")
-            self.quality = "standard"
+            logger.warning(f"Invalid OPENAI_QUALITY in environment: {self.quality}. Using default: {self.DEFAULT_QUALITY}")
+            self.quality = self.DEFAULT_QUALITY
             
         if self.style not in self.VALID_STYLES:
-            logger.warning(f"Invalid OPENAI_STYLE in environment: {self.style}. Using default: vivid")
-            self.style = "vivid"
+            logger.warning(f"Invalid OPENAI_STYLE in environment: {self.style}. Using default: {self.DEFAULT_STYLE}")
+            self.style = self.DEFAULT_STYLE
+    
+    def is_valid_model(self, model: str) -> bool:
+        """
+        Check if the model name is valid by checking if it starts with a recognized prefix.
+        
+        Args:
+            model (str): The model name to check
+            
+        Returns:
+            bool: True if the model is valid, False otherwise
+        """
+        if not model:
+            return False
+            
+        # Check if the model starts with any of the recognized prefixes
+        for prefix in self.OPENAI_MODEL_PREFIXES + self.GEMINI_MODEL_PREFIXES:
+            if model.lower().startswith(prefix.lower()):
+                return True
+                
+        return False
+    
+    def is_openai_model(self, model: str = None) -> bool:
+        """
+        Check if the model is an OpenAI model.
+        
+        Args:
+            model (str, optional): The model name to check. If None, uses the configured model.
+            
+        Returns:
+            bool: True if the model is an OpenAI model, False otherwise
+        """
+        model = model or self.model
+        
+        for prefix in self.OPENAI_MODEL_PREFIXES:
+            if model.lower().startswith(prefix.lower()):
+                return True
+                
+        return False
+    
+    def is_gemini_model(self, model: str = None) -> bool:
+        """
+        Check if the model is a Gemini model.
+        
+        Args:
+            model (str, optional): The model name to check. If None, uses the configured model.
+            
+        Returns:
+            bool: True if the model is a Gemini model, False otherwise
+        """
+        model = model or self.model
+        
+        for prefix in self.GEMINI_MODEL_PREFIXES:
+            if model.lower().startswith(prefix.lower()):
+                return True
+                
+        return False
     
     def set_model(self, model: str) -> bool:
         """
         Set the model if valid, otherwise return False
         """
-        if model in self.VALID_MODELS:
+        if self.is_valid_model(model):
             self.model = model
             logger.info(f"Model set to: {model}")
             return True
         else:
-            logger.warning(f"Invalid model: {model}. Valid options are: {', '.join(self.VALID_MODELS)}")
+            logger.warning(f"Invalid model: {model}. Model must start with one of: {', '.join(self.OPENAI_MODEL_PREFIXES + self.GEMINI_MODEL_PREFIXES)}")
             return False
     
     def set_size(self, size: str) -> bool:
@@ -161,7 +227,7 @@ def generate_image_with_openai(prompt: str, api_key: str = None, model: str = No
     Args:
         prompt (str): The text prompt to generate an image from
         api_key (str, optional): OpenAI API key. If None, uses OPENAI_API_KEY environment variable
-        model (str, optional): The model to use. Options: "dall-e-3" (default) or "dall-e-2"
+        model (str, optional): The model to use. If None, uses the configured model.
         size (str, optional): Image size. Options for DALL-E 3: "1024x1024" (default), "1792x1024", or "1024x1792"
         quality (str, optional): Image quality. Options: "standard" (default) or "hd" (DALL-E 3 only)
         style (str, optional): Image style. Options: "vivid" (default) or "natural" (DALL-E 3 only)
@@ -202,24 +268,44 @@ def generate_image_with_openai(prompt: str, api_key: str = None, model: str = No
         client = openai.OpenAI(api_key=api_key)
         
         # Generate image with OpenAI
-        if model.lower() in ["dall-e-3", "dall-e-2"]:
+        # For DALL-E models, we need to check if the model name starts with "dall-e"
+        if model.lower().startswith("dall-e"):
+            # For DALL-E 3, we can use quality and style parameters
+            if model.lower() == "dall-e-3":
+                response = client.images.generate(
+                    model=model,
+                    prompt=prompt,
+                    size=size,
+                    quality=quality,
+                    style=style,
+                    n=1,
+                    response_format="url"
+                )
+            else:
+                # For DALL-E 2 and other versions, don't use quality and style
+                response = client.images.generate(
+                    model=model,
+                    prompt=prompt,
+                    size=size,
+                    n=1,
+                    response_format="url"
+                )
+        else:
+            # For other OpenAI models, try to use the standard parameters
+            # This is a fallback for future models or other OpenAI models
+            logger.warning(f"Using non-DALL-E model: {model}. Some parameters may be ignored.")
             response = client.images.generate(
                 model=model,
                 prompt=prompt,
                 size=size,
-                quality=quality if model.lower() == "dall-e-3" else None,
-                style=style if model.lower() == "dall-e-3" else None,
                 n=1,
                 response_format="url"
             )
             
-            # Extract the URL from the response
-            image_url = response.data[0].url
-            logger.info(f"Image generated successfully with OpenAI: {image_url}")
-            return image_url
-        else:
-            logger.error(f"Unsupported OpenAI model: {model}")
-            return None
+        # Extract the URL from the response
+        image_url = response.data[0].url
+        logger.info(f"Image generated successfully with OpenAI: {image_url}")
+        return image_url
             
     except Exception as e:
         logger.error(f"Error generating image with OpenAI: {e}")
@@ -243,10 +329,12 @@ def generate_image_with_gemini(prompt: str) -> Optional[str]:
         return None
     
     try:
-        logger.info(f"Generating image with Gemini model, prompt: '{prompt}'")
+        # Get the exact model name from the configuration
+        model_name = gen_config.model
+        logger.info(f"Generating image with Gemini model: {model_name}, prompt: '{prompt}'")
         
         # Generate image with Gemini
-        model = genai.GenerativeModel('gemini-2.0-flash-exp-image-generation')
+        model = genai.GenerativeModel(model_name)
         response = model.generate_content(contents=prompt)
         
         # Extract and save the image
@@ -314,9 +402,9 @@ def generate_image(prompt: str, model: str = None) -> Optional[str]:
     logger.info(f"Generating image with model: {model}, prompt: '{prompt}'")
     
     # Generate image based on the model
-    if model.lower() == "gemini":
+    if gen_config.is_gemini_model(model):
         return generate_image_with_gemini(prompt)
-    elif model.lower() in ["dall-e-3", "dall-e-2"]:
+    elif gen_config.is_openai_model(model):
         return generate_image_with_openai(prompt, model=model)
     else:
         logger.error(f"Unsupported model: {model}")

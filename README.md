@@ -38,7 +38,7 @@ Usage: YAIL.XEX [OPTIONS]
 The server is written in Python and provides various image streaming capabilities for the YAIL client on Atari 8-bit computers via FujiNet.
 
 ### Features ###
-- **OpenAI Image Generation**: Generate images using OpenAI's DALL-E 3 model based on text prompts
+- **Multi-API Image Generation**: Generate images using OpenAI's DALL-E 3 model or Google's Gemini model
 - **Local Image Streaming**: Stream images from a local directory
 - **Web Camera Support**: Stream live video from a connected webcam
 - **Multiple Graphics Modes**: Support for different Atari graphics modes (8, 9, and VBXE)
@@ -60,42 +60,63 @@ The server is written in Python and provides various image streaming capabilitie
   - openai
   - python-dotenv
   - netifaces
+  - google-generativeai (for Gemini support)
 
 ### Server Commands ###
 The YAIL server can process the following commands from clients:
-- `generate <prompt>` or `gen <prompt>`: Generate an image using OpenAI's DALL-E 3 model
-- `search <terms>`: Search for images using the provided terms
+- `generate <prompt>` or `gen <prompt>`: Generate an image using the configured image generation model
+- `search <terms>`: Search for images using the provided terms (redirects to image generation)
 - `camera`: Stream from a connected webcam
-- `openai`: Configure OpenAI settings
+- `openai`: Configure image generation settings
 - `gfx <mode>`: Set the graphics mode
 - `quit`: Exit the client connection
 
 ### Configuration ###
-The server can be configured using environment variables or command-line arguments:
+The server can be configured using environment variables. Copy the `deployment/env.example` file to `server/env` and edit it to set your API keys and preferences:
 
-#### Environment Variables
-Create a file named `env` in the server directory with the following variables:
-```
-OPENAI_API_KEY=your_api_key_here
-OPENAI_MODEL=dall-e-3
+```bash
+# Image Generation API Configuration
+OPENAI_API_KEY=your_openai_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here_if_needed
+
+# Image Generation Model Configuration
+GEN_MODEL=dall-e-3  # Options: dall-e-3, dall-e-2, gemini
+
+# OpenAI-specific Configuration (used only with dall-e models)
 OPENAI_SIZE=1024x1024
 OPENAI_QUALITY=standard
 OPENAI_STYLE=vivid
-OPENAI_SYSTEM_PROMPT=You are an expert illustrator creating beautiful, imaginative artwork
+OPENAI_SYSTEM_PROMPT='You are an expert illustrator creating beautiful, imaginative artwork'
 ```
 
-#### Command-Line Arguments
-```
---paths <directory>      Directory containing images to stream
---extensions <ext>       File extensions to include (default: .jpg, .jpeg, .gif, .png)
---camera <device>        Camera device to use
---port <number>          Port to listen on (default: 5556)
---loglevel <level>       Logging level (INFO, DEBUG, etc.)
---openai-api-key <key>   OpenAI API key
---openai-model <model>   OpenAI model (dall-e-3 or dall-e-2)
---openai-size <size>     Image size (1024x1024, 1792x1024, or 1024x1792)
---openai-quality <qual>  Image quality (standard or hd)
---openai-style <style>   Image style (vivid or natural)
+### API Keys
+
+- For OpenAI models (dall-e-3, dall-e-2), you need an OpenAI API key from [OpenAI's platform](https://platform.openai.com/api-keys)
+- For Google Gemini model, you need a Gemini API key from [Google AI Studio](https://aistudio.google.com/)
+
+### Image Generation Models
+
+The server supports multiple image generation models:
+
+1. **OpenAI DALL-E Models**:
+   - `dall-e-3`: High-quality image generation with detailed prompt following
+   - `dall-e-2`: Faster generation with lower cost
+   - Other OpenAI models as they become available
+
+2. **Google Gemini Models**:
+   - `gemini-2.5-pro-exp-03-25`: Google's advanced image generation model
+   - Other Gemini models as they become available
+
+Set your preferred model using the `GEN_MODEL` environment variable or the `--gen-model` command-line argument. The server automatically detects which API to use based on the model name prefix:
+- Models starting with `dall-e-` or `gpt-` use the OpenAI API
+- Models starting with `gemini` use the Google Gemini API
+
+```bash
+# Example: Using OpenAI DALL-E 3
+GEN_MODEL=dall-e-3
+
+# Example: Using Google Gemini
+GEN_MODEL=gemini-2.5-pro-exp-03-25
 ```
 
 ### Deployment ###
@@ -144,12 +165,17 @@ python deployment/test_gen_command.py "happy people dancing"
    python server/yail.py --paths /path/to/images --loglevel INFO
    ```
 
-2. Start the server with OpenAI image generation:
+2. Start the server with OpenAI's DALL-E 3 for image generation:
    ```
-   python server/yail.py --openai-api-key your_api_key_here --openai-model dall-e-3
+   python server/yail.py --openai-api-key your_api_key_here --gen-model dall-e-3
    ```
 
-3. Start the server as a systemd service:
+3. Start the server with Google's Gemini model for image generation:
+   ```
+   python server/yail.py --gen-model gemini
+   ```
+
+4. Start the server as a systemd service:
    ```
    sudo systemctl start fujinet-yail
    ```
