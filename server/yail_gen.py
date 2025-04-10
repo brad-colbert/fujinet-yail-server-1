@@ -68,14 +68,27 @@ class ImageGenConfig:
     def __init__(self):
         # Load settings from environment variables
         self.model = os.environ.get("GEN_MODEL", os.environ.get("OPENAI_MODEL", self.DEFAULT_MODEL))
+        
+        # Force model to be gemini-2.5-pro-exp-03-25 if it contains "gemini" in the name
+        if "gemini" in self.model.lower():
+            logger.info(f"Model name contains 'gemini', ensuring it's treated as a Gemini model: {self.model}")
+            # Make sure we're using the full model name for Gemini
+            if self.model.lower() == "gemini":
+                self.model = "gemini-2.5-pro-exp-03-25"
+                logger.info(f"Updated generic 'gemini' to specific model: {self.model}")
+        
         self.size = os.environ.get("OPENAI_SIZE", self.DEFAULT_SIZE)
         self.quality = os.environ.get("OPENAI_QUALITY", self.DEFAULT_QUALITY)
         self.style = os.environ.get("OPENAI_STYLE", self.DEFAULT_STYLE)
         self.api_key = os.environ.get("OPENAI_API_KEY")
+        self.gemini_api_key = os.environ.get("GEMINI_API_KEY")
         self.system_prompt = os.environ.get("OPENAI_SYSTEM_PROMPT", "You are an image generation assistant. Generate an image based on the user's description.")
         
         # Debug: Print loaded configuration
         logger.info(f"ImageGenConfig initialized with model: {self.model}")
+        logger.info(f"Environment variables: GEN_MODEL={os.environ.get('GEN_MODEL', 'not set')}, OPENAI_MODEL={os.environ.get('OPENAI_MODEL', 'not set')}")
+        logger.info(f"OPENAI_API_KEY: {'Set' if self.api_key else 'Not set'}")
+        logger.info(f"GEMINI_API_KEY: {'Set' if self.gemini_api_key else 'Not set'}")
         
         # Validate the loaded settings
         if not self.is_valid_model(self.model):
@@ -144,9 +157,15 @@ class ImageGenConfig:
         """
         model = model or self.model
         
+        # First check with the prefix method
         for prefix in self.GEMINI_MODEL_PREFIXES:
             if model.lower().startswith(prefix.lower()):
                 return True
+        
+        # Then check if "gemini" appears anywhere in the model name
+        if "gemini" in model.lower():
+            logger.info(f"Model name contains 'gemini', treating as Gemini model: {model}")
+            return True
                 
         return False
     
@@ -333,6 +352,15 @@ def generate_image_with_gemini(prompt: str) -> Optional[str]:
         model_name = gen_config.model
         logger.info(f"Generating image with Gemini model: {model_name}, prompt: '{prompt}'")
         
+        # Check if we have an API key
+        api_key = gen_config.gemini_api_key
+        if not api_key:
+            logger.error("Gemini API key not provided. Set GEMINI_API_KEY environment variable.")
+            return None
+            
+        # Configure the Gemini API
+        genai.configure(api_key=api_key)
+        
         # Generate image with Gemini
         model = genai.GenerativeModel(model_name)
         response = model.generate_content(contents=prompt)
@@ -401,15 +429,34 @@ def generate_image(prompt: str, model: str = None) -> Optional[str]:
     
     logger.info(f"Generating image with model: {model}, prompt: '{prompt}'")
     
+    # Debug the model detection
+    logger.info(f"Model detection: is_gemini={gen_config.is_gemini_model(model)}, is_openai={gen_config.is_openai_model(model)}")
+    
     # Generate image based on the model
     if gen_config.is_gemini_model(model):
+        logger.info(f"Using Gemini API for model: {model}")
         return generate_image_with_gemini(prompt)
     elif gen_config.is_openai_model(model):
+        logger.info(f"Using OpenAI API for model: {model}")
         return generate_image_with_openai(prompt, model=model)
     else:
-        logger.error(f"Unsupported model: {model}")
-        return None
+        # If model detection fails, try to infer from the model name
+        if "gemini" in model.lower():
+            logger.info(f"Model name contains 'gemini', using Gemini API for model: {model}")
+            return generate_image_with_gemini(prompt)
+        elif any(prefix in model.lower() for prefix in ["dall-e", "gpt"]):
+            logger.info(f"Model name contains OpenAI prefix, using OpenAI API for model: {model}")
+            return generate_image_with_openai(prompt, model=model)
+        else:
+            logger.error(f"Unsupported model: {model}")
+            return None
 
 
-# Create a global instance of ImageGenConfig
-gen_config = ImageGenConfig()
+# Create a global instance of ImageGenConfig - will be initialized later
+gen_config = None
+
+def initialize_gen_config():
+    """Initialize the global gen_config instance"""
+    global gen_config
+    gen_config = ImageGenConfig()
+    return gen_config

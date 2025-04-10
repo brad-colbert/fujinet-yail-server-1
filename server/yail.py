@@ -31,6 +31,7 @@ from yail_gen import (
     generate_image_with_openai, 
     generate_image_with_gemini,
     gen_config,
+    initialize_gen_config,
     OPENAI_AVAILABLE,
     GEMINI_AVAILABLE
 )
@@ -53,29 +54,7 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Load environment variables from env file
-env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'env')
-if os.path.exists(env_path):
-    load_dotenv(env_path)
-    logger.info(f"Loaded environment variables from {env_path}")
-else:
-    logger.info(f"No env file found at {env_path}. Using default environment variables.")
-
-# Log all relevant environment variables
-logger.info("Environment Variables:")
-logger.info(f"  OPENAI_API_KEY: {'Set' if os.environ.get('OPENAI_API_KEY') else 'Not set'}")
-logger.info(f"  GEMINI_API_KEY: {'Set' if os.environ.get('GEMINI_API_KEY') else 'Not set'}")
-logger.info(f"  GEN_MODEL: {os.environ.get('GEN_MODEL', 'Not set (will default to dall-e-3)')}")
-logger.info(f"  OPENAI_MODEL: {os.environ.get('OPENAI_MODEL', 'Not set (using GEN_MODEL instead)')}")
-logger.info(f"  OPENAI_SIZE: {os.environ.get('OPENAI_SIZE', 'Not set (will default to 1024x1024)')}")
-logger.info(f"  OPENAI_QUALITY: {os.environ.get('OPENAI_QUALITY', 'Not set (will default to standard)')}")
-logger.info(f"  OPENAI_STYLE: {os.environ.get('OPENAI_STYLE', 'Not set (will default to vivid)')}")
-logger.info(f"  OPENAI_SYSTEM_PROMPT: {os.environ.get('OPENAI_SYSTEM_PROMPT', 'Not set (will use default)')}")
-
-# Debug: Print loaded environment variables
-logger.info(f"OPENAI_MODEL from environment: {os.environ.get('OPENAI_MODEL', 'not set')}")
-logger.info(f"OPENAI_SYSTEM_PROMPT from environment: {os.environ.get('OPENAI_SYSTEM_PROMPT', 'not set')}")
-
+# Constants for image processing
 SOCKET_WAIT_TIME = 1
 GRAPHICS_8 = 2
 GRAPHICS_9 = 4
@@ -95,6 +74,10 @@ ERROR_BLOCK = 0xFF
 # Global variables
 yail_data = bytearray()
 yail_mutex = threading.Lock()
+camera_thread = None
+camera_running = False
+latest_camera_image = None
+active_client_threads = []  # Track active client threads
 connections = 0
 filenames = []
 last_prompt = None
@@ -516,13 +499,12 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
         client_socket: The client socket to handle
         thread_id: The ID of this client thread for tracking
     """
-    global connections
-    global camera_thread
-    global camera_done
+    global camera_thread, camera_running, active_client_threads
     global last_prompt
     global last_gen_model
     global gen_config
-
+    global connections
+    
     logger.info(f"Starting Connection: {thread_id}")
     
     connections += 1
@@ -749,6 +731,10 @@ def F(file_path):
     filenames.append(file_path)
 
 def main():
+    """
+    Main function to start the YAIL server.
+    """
+    global camera_thread, camera_running, active_client_threads
     global gen_config
     
     # Track active client threads
@@ -853,6 +839,52 @@ def main():
                 logger.info(f"Camera initialized: {args.camera}")
             else:
                 logger.warning(f"Failed to initialize camera: {args.camera}")
+
+    # Load environment variables from env file
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'env')
+    if os.path.exists(env_path):
+        logger.info(f"Loading environment variables from {env_path}")
+        # Read the env file line by line and set environment variables
+        with open(env_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    try:
+                        key, value = line.split('=', 1)
+                        # Remove quotes if present
+                        value = value.strip().strip("'\"")
+                        os.environ[key.strip()] = value
+                        logger.debug(f"Set environment variable: {key}={value}")
+                    except ValueError:
+                        logger.warning(f"Invalid line in env file: {line}")
+    else:
+        logger.info(f"No env file found at {env_path}. Using default environment variables.")
+    
+    # Override model from command line if provided
+    if args.gen_model:
+        logger.info(f"Overriding GEN_MODEL from command line: {args.gen_model}")
+        os.environ["GEN_MODEL"] = args.gen_model
+
+    # Log all relevant environment variables
+    logger.info("Environment Variables:")
+    logger.info(f"  OPENAI_API_KEY: {'Set' if os.environ.get('OPENAI_API_KEY') else 'Not set'}")
+    logger.info(f"  GEMINI_API_KEY: {'Set' if os.environ.get('GEMINI_API_KEY') else 'Not set'}")
+    logger.info(f"  GEN_MODEL: {os.environ.get('GEN_MODEL', 'Not set (will default to dall-e-3)')}")
+    logger.info(f"  OPENAI_MODEL: {os.environ.get('OPENAI_MODEL', 'Not set (using GEN_MODEL instead)')}")
+    logger.info(f"  OPENAI_SIZE: {os.environ.get('OPENAI_SIZE', 'Not set (will default to 1024x1024)')}")
+    logger.info(f"  OPENAI_QUALITY: {os.environ.get('OPENAI_QUALITY', 'Not set (will default to standard)')}")
+    logger.info(f"  OPENAI_STYLE: {os.environ.get('OPENAI_STYLE', 'Not set (will default to vivid)')}")
+    logger.info(f"  OPENAI_SYSTEM_PROMPT: {os.environ.get('OPENAI_SYSTEM_PROMPT', 'Not set (will use default)')}")
+
+    # Initialize the gen_config after environment variables are loaded
+    logger.info("Initializing image generation configuration...")
+    gen_config = initialize_gen_config()
+    if gen_config:
+        logger.info(f"Image generation model set to: {gen_config.model}")
+        logger.info(f"Is Gemini model: {gen_config.is_gemini_model()}")
+        logger.info(f"Is OpenAI model: {gen_config.is_openai_model()}")
+    else:
+        logger.error("Failed to initialize image generation configuration")
 
     # Create the server socket with SO_REUSEADDR option
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
