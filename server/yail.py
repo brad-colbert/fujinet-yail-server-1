@@ -34,7 +34,22 @@ print(f"OPENAI_MODEL from environment: {os.environ.get('OPENAI_MODEL', 'not set'
 print(f"OPENAI_SYSTEM_PROMPT from environment: {os.environ.get('OPENAI_SYSTEM_PROMPT', 'not set')}")
 
 # Set up logging first thing
-logging.basicConfig(level=logging.WARN)
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Get the root logger and remove any existing handlers
+root = logging.getLogger()
+for handler in root.handlers[:]:
+    root.removeHandler(handler)
+
+# Add a single console handler
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(formatter)
+root.addHandler(console_handler)
+
+# Get our module logger
 logger = logging.getLogger(__name__)
 
 SOCKET_WAIT_TIME = 1
@@ -58,7 +73,7 @@ class OpenAIConfig:
     Provides validation and management of OpenAI-related parameters.
     """
     # Valid configuration options
-    VALID_MODELS = ["dall-e-3", "gpt-4o"]
+    VALID_MODELS = ["dall-e-3", "dall-e-2"]
     VALID_SIZES = ["1024x1024", "1792x1024", "1024x1792"]
     VALID_QUALITIES = ["standard", "hd"]
     VALID_STYLES = ["vivid", "natural"]
@@ -136,6 +151,8 @@ class OpenAIConfig:
         """String representation of the configuration"""
         return f"model={self.model}, size={self.size}, quality={self.quality}, style={self.style}"
 
+# Create a global instance of OpenAIConfig
+openai_config = OpenAIConfig()
 
 # The yail_data will contain the image that is to be sent.  It
 # is protected with a Mutex so that when the image is being sent
@@ -147,7 +164,6 @@ camera_thread = None
 camera_done = False
 filenames = []
 camera_name = None
-openai_config = OpenAIConfig()  # Create a single instance of the configuration
 
 def prep_image_for_vbxe(image: Image.Image, target_width: int=YAIL_W, target_height: int=YAIL_H) -> Image.Image:
     logger.info(f'Image size: {image.size}')
@@ -424,16 +440,15 @@ def search_images(term: str, max_images: int=1000) -> list:
 
         return urls
 
-def generate_image_with_openai(prompt: str, api_key: str = None, model: str = "dall-e-3", size: str = "1024x1024", quality: str = "standard", style: str = "vivid") -> str:
+def generate_image_with_openai(prompt: str, api_key: str = None, model: str = None, size: str = None, quality: str = None, style: str = None) -> str:
     """
     Generate an image using OpenAI's image generation models and return the URL.
     
     Args:
         prompt (str): The text prompt to generate an image from
         api_key (str, optional): OpenAI API key. If None, uses OPENAI_API_KEY environment variable
-        model (str, optional): The model to use. Options: "dall-e-3" (default) or "gpt-4o"
+        model (str, optional): The model to use. Options: "dall-e-3" (default) or "dall-e-2"
         size (str, optional): Image size. Options for DALL-E 3: "1024x1024" (default), "1792x1024", or "1024x1792"
-                             For GPT-4o, size parameter may not be applicable
         quality (str, optional): Image quality. Options: "standard" (default) or "hd" (DALL-E 3 only)
         style (str, optional): Image style. Options: "vivid" (default) or "natural" (DALL-E 3 only)
         
@@ -441,8 +456,17 @@ def generate_image_with_openai(prompt: str, api_key: str = None, model: str = "d
         str: URL of the generated image or None if generation failed
     """
     try:
+        # Use provided parameters or fall back to openai_config values
+        model = model or openai_config.model
+        size = size or openai_config.size
+        quality = quality or openai_config.quality
+        style = style or openai_config.style
+        
         # Set API key from parameter, config, or environment variable
         api_key = api_key or openai_config.api_key or os.environ.get("OPENAI_API_KEY")
+        
+        # Debug: Print the model being used
+        logger.info(f"DEBUG: Using model: {model}, type: {type(model)}")
             
         if not api_key:
             logger.error("OpenAI API key not found. Set OPENAI_API_KEY environment variable, use --openai-api-key, or provide api_key parameter.")
@@ -454,59 +478,29 @@ def generate_image_with_openai(prompt: str, api_key: str = None, model: str = "d
         # Generate image based on model type
         logger.info(f"Generating image with {model} model, prompt: '{prompt}'")
         
-        if model.lower() in ["gpt-4o", "gpt4o"]:  # Fix the model comparison
-            # GPT-4o image generation
-            try:
-                # Note: Parameters may differ for GPT-4o, adjust as needed based on official documentation
-                response = client.chat.completions.create(
-                    model=model,  # Use the model parameter instead of hardcoding
-                    messages=[
-                        {"role": "system", "content": openai_config.system_prompt},
-                        {"role": "user", "content": f"Generate an image of: {prompt}"}
-                    ],
-                    tools=[{"type": "image_generator"}]
-                )
-                
-                # Extract image URL from response
-                for tool_call in response.choices[0].message.tool_calls or []:
-                    if tool_call.function.name == "image_generator":
-                        # Parse the function arguments to get the image URL
-                        import json
-                        try:
-                            function_args = json.loads(tool_call.function.arguments)
-                            image_url = function_args.get("url")
-                            if image_url:
-                                logger.info(f"Image generated successfully with GPT-4o: {image_url}")
-                                return image_url
-                        except json.JSONDecodeError as e:
-                            logger.error(f"Error parsing GPT-4o response: {e}")
-                
-                logger.error("Failed to extract image URL from GPT-4o response")
-                return None
-            except Exception as e:
-                logger.error(f"Error with GPT-4o image generation: {e}")
-                return None
-            
-        else:  # Default to DALL-E 3
-            # DALL-E 3 image generation
-            try:
-                response = client.images.generate(
-                    model=model,  # Use the model parameter instead of hardcoding
-                    prompt=prompt,
-                    n=1,
-                    size=size,
-                    quality=quality,
-                    style=style
-                )
-                
-                # Return the URL of the generated image
-                image_url = response.data[0].url
-                logger.info(f"Image generated successfully with DALL-E 3: {image_url}")
-                return image_url
-            except Exception as e:
-                logger.error(f"Error with DALL-E 3 image generation: {e}")
-                return None
+        # For image generation, we should use DALL-E models
+        # Normalize model name to ensure compatibility
+        if model.lower() in ["dall-e-3", "dalle-3", "dalle3"]:
+            model_to_use = "dall-e-3"
+        else:
+            # Default to DALL-E 3 for any other model name
+            model_to_use = "dall-e-3"
+            logger.warning(f"Model '{model}' not recognized for image generation. Using DALL-E 3 instead.")
         
+        # Generate image with DALL-E
+        response = client.images.generate(
+            model=model_to_use,
+            prompt=prompt,
+            size=size,
+            quality=quality,
+            style=style,
+            n=1
+        )
+        
+        # Extract and return the image URL
+        image_url = response.data[0].url
+        logger.info(f"Image generated successfully with {model_to_use}: {image_url}")
+        return image_url
     except Exception as e:
         logger.error(f"Error generating image with OpenAI: {e}")
         return None
@@ -792,7 +786,7 @@ def handle_client_connection(client_socket: socket.socket) -> None:
                             if openai_config.set_model(value):
                                 send_client_response(client_socket, f"OpenAI model set to {value}")
                             else:
-                                send_client_response(client_socket, "Invalid model. Use 'dall-e-3' or 'gpt-4o'", is_error=True)
+                                send_client_response(client_socket, "Invalid model. Use 'dall-e-3' or 'dall-e-2'", is_error=True)
                         
                         elif param == "size":
                             if openai_config.set_size(value):
@@ -894,10 +888,10 @@ def main():
         parser.add_argument('--port', nargs='+', default=None, help='Specify the port to listen too', required=False)
         parser.add_argument('--loglevel', nargs='+', default=None, help='The level of logging', required=False)
         parser.add_argument('--openai-api-key', type=str, help='OpenAI API key for image generation', required=False)
-        parser.add_argument('--openai-model', type=str, default='dall-e-3', choices=['dall-e-3', 'gpt-4o'], help='OpenAI image generation model to use', required=False)
-        parser.add_argument('--openai-size', type=str, default='1024x1024', choices=['1024x1024', '1792x1024', '1024x1792'], help='Image size for DALL-E 3 (ignored for GPT-4o)', required=False)
-        parser.add_argument('--openai-quality', type=str, default='standard', choices=['standard', 'hd'], help='Image quality for DALL-E 3 (ignored for GPT-4o)', required=False)
-        parser.add_argument('--openai-style', type=str, default='vivid', choices=['vivid', 'natural'], help='Image style for DALL-E 3 (ignored for GPT-4o)', required=False)
+        parser.add_argument('--openai-model', type=str, default='dall-e-3', choices=['dall-e-3', 'dall-e-2'], help='OpenAI image generation model to use', required=False)
+        parser.add_argument('--openai-size', type=str, default='1024x1024', choices=['1024x1024', '1792x1024', '1024x1792'], help='Image size for DALL-E 3', required=False)
+        parser.add_argument('--openai-quality', type=str, default='standard', choices=['standard', 'hd'], help='Image quality for DALL-E 3', required=False)
+        parser.add_argument('--openai-style', type=str, default='vivid', choices=['vivid', 'natural'], help='Image style for DALL-E 3', required=False)
         
         args = parser.parse_args()
 
@@ -977,21 +971,34 @@ def main():
             logger.info(f"  IP Address (via hostname): {host_ip}")
         except Exception as e:
             logger.warning(f"  Could not resolve hostname to IP: {e}")
+            logger.info(f"  Using fallback local IP: 127.0.0.1")
     except Exception as e:
         logger.warning(f"  Could not determine hostname: {e}")
+        logger.info(f"  Using fallback local IP: 127.0.0.1")
     
     # Try using netifaces if available
     try:
         import netifaces
         logger.info('  Available network interfaces:')
+        local_ips = []
+        
         for interface in netifaces.interfaces():
             try:
                 addresses = netifaces.ifaddresses(interface)
                 if netifaces.AF_INET in addresses:
                     for address in addresses[netifaces.AF_INET]:
-                        logger.info(f"    {interface}: {address.get('addr', 'unknown')}")
+                        ip = address.get('addr', '')
+                        if ip and not ip.startswith('127.'):  # Skip loopback addresses
+                            local_ips.append(ip)
+                        logger.info(f"    {interface}: {ip or 'unknown'}")
             except Exception as e:
                 logger.warning(f"    Error getting info for interface {interface}: {e}")
+        
+        # Log the best IP to use for connections
+        if local_ips:
+            logger.info(f"  Recommended IP for connections: {local_ips[0]}")
+        else:
+            logger.info("  No non-loopback interfaces found, using 127.0.0.1")
     except ImportError:
         logger.warning("  netifaces package not available. Install with: pip install netifaces")
     except Exception as e:
