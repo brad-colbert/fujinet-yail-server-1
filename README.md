@@ -15,8 +15,9 @@ Commands:
   - load <filename>       - Loads the specified PBM/PGM files and now a new YAI file.
   - save <filename>       - Saves the current image and graphics state to a YAI file.
   - cls                   - Clears the screen
-  - gfx #  (0, 8, 9)      - Change the graphics mode to the number specified
-  - stream <search terms> - Stream images (gfx 9) from the yailsrv.py.
+  - gfx #  (0, 8, 9, 20)  - (For Atari) Change the graphics mode to the number specified
+  - search <terms>        - Stream images found on the internet using DDG from the yail.py.
+  - generate <terms>      - Stream images generated using AI from the yail.py.
   - set server <url>      - Give the N:TCP URL for the location of the yailsrv.py.
                              Ex: set server N:TCP://192.168.1.205:9999/
   - quit              - Quit the application
