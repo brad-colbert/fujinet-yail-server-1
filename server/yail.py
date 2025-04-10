@@ -20,37 +20,54 @@ import numpy as np
 import sys
 import openai
 from dotenv import load_dotenv
+from io import BytesIO
+import base64
+import signal
+import threading
+
+# Set up logging first thing
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Load environment variables from env file
 env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'env')
 if os.path.exists(env_path):
     load_dotenv(env_path)
-    print(f"Loaded environment variables from {env_path}")
+    logger.info(f"Loaded environment variables from {env_path}")
 else:
-    print(f"No env file found at {env_path}. Using default environment variables.")
+    logger.info(f"No env file found at {env_path}. Using default environment variables.")
+
+# For Google Gemini API
+try:
+    import google.generativeai as genai
+    from google.generativeai import types as genai_types
+    GEMINI_AVAILABLE = True
+    # Configure the Gemini API with API key if provided
+    gemini_api_key = os.environ.get("GEMINI_API_KEY")
+    if gemini_api_key:
+        logger.info(f"Gemini API key found in environment, configuring Gemini API")
+        genai.configure(api_key=gemini_api_key)
+    else:
+        logger.info("No GEMINI_API_KEY found in environment. Using default authentication.")
+except ImportError:
+    GEMINI_AVAILABLE = False
+    logger.error("Google Generative AI library not available. Install with: pip install google-generativeai")
+
+# Log all relevant environment variables
+logger.info("Environment Variables:")
+logger.info(f"  OPENAI_API_KEY: {'Set' if os.environ.get('OPENAI_API_KEY') else 'Not set'}")
+logger.info(f"  GEMINI_API_KEY: {'Set' if os.environ.get('GEMINI_API_KEY') else 'Not set'}")
+logger.info(f"  GEN_MODEL: {os.environ.get('GEN_MODEL', 'Not set (will default to dall-e-3)')}")
+logger.info(f"  OPENAI_MODEL: {os.environ.get('OPENAI_MODEL', 'Not set (using GEN_MODEL instead)')}")
+logger.info(f"  OPENAI_SIZE: {os.environ.get('OPENAI_SIZE', 'Not set (will default to 1024x1024)')}")
+logger.info(f"  OPENAI_QUALITY: {os.environ.get('OPENAI_QUALITY', 'Not set (will default to standard)')}")
+logger.info(f"  OPENAI_STYLE: {os.environ.get('OPENAI_STYLE', 'Not set (will default to vivid)')}")
+logger.info(f"  OPENAI_SYSTEM_PROMPT: {os.environ.get('OPENAI_SYSTEM_PROMPT', 'Not set (will use default)')}")
 
 # Debug: Print loaded environment variables
-print(f"OPENAI_MODEL from environment: {os.environ.get('OPENAI_MODEL', 'not set')}")
-print(f"OPENAI_SYSTEM_PROMPT from environment: {os.environ.get('OPENAI_SYSTEM_PROMPT', 'not set')}")
-
-# Set up logging first thing
-logging.basicConfig(level=logging.INFO, 
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-# Get the root logger and remove any existing handlers
-root = logging.getLogger()
-for handler in root.handlers[:]:
-    root.removeHandler(handler)
-
-# Add a single console handler
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-console_handler.setFormatter(formatter)
-root.addHandler(console_handler)
-
-# Get our module logger
-logger = logging.getLogger(__name__)
+logger.info(f"OPENAI_MODEL from environment: {os.environ.get('OPENAI_MODEL', 'not set')}")
+logger.info(f"OPENAI_SYSTEM_PROMPT from environment: {os.environ.get('OPENAI_SYSTEM_PROMPT', 'not set')}")
 
 SOCKET_WAIT_TIME = 1
 GRAPHICS_8 = 2
@@ -67,20 +84,20 @@ IMAGE_BLOCK = 0x07
 ERROR_BLOCK = 0xFF
 
 
-class OpenAIConfig:
+class ImageGenConfig:
     """
-    Configuration class for OpenAI image generation settings.
-    Provides validation and management of OpenAI-related parameters.
+    Configuration class for image generation.
+    Provides validation and management of image generation parameters.
     """
     # Valid configuration options
-    VALID_MODELS = ["dall-e-3", "dall-e-2"]
+    VALID_MODELS = ["dall-e-3", "dall-e-2", "gemini"]
     VALID_SIZES = ["1024x1024", "1792x1024", "1024x1792"]
     VALID_QUALITIES = ["standard", "hd"]
     VALID_STYLES = ["vivid", "natural"]
     
     def __init__(self):
         # Default settings
-        self.model = os.environ.get("OPENAI_MODEL", "dall-e-3")
+        self.model = os.environ.get("GEN_MODEL", os.environ.get("OPENAI_MODEL", "dall-e-3"))
         self.size = os.environ.get("OPENAI_SIZE", "1024x1024")
         self.quality = os.environ.get("OPENAI_QUALITY", "standard")
         self.style = os.environ.get("OPENAI_STYLE", "vivid")
@@ -88,11 +105,11 @@ class OpenAIConfig:
         self.system_prompt = os.environ.get("OPENAI_SYSTEM_PROMPT", "You are an image generation assistant. Generate an image based on the user's description.")
         
         # Debug: Print loaded configuration
-        print(f"OpenAIConfig initialized with model: {self.model}")
+        logger.info(f"ImageGenConfig initialized with model: {self.model}")
         
         # Validate the loaded settings
         if self.model not in self.VALID_MODELS:
-            logger.warning(f"Invalid OPENAI_MODEL in environment: {self.model}. Using default: dall-e-3")
+            logger.warning(f"Invalid GEN_MODEL in environment: {self.model}. Using default: dall-e-3")
             self.model = "dall-e-3"
             
         if self.size not in self.VALID_SIZES:
@@ -135,24 +152,22 @@ class OpenAIConfig:
             return True
         return False
     
-    def set_system_prompt(self, system_prompt):
-        """Set the system prompt for image generation"""
-        self.system_prompt = system_prompt
-        return True
-    
     def set_api_key(self, api_key):
         """Set the API key"""
         self.api_key = api_key
-        # Update environment variable for compatibility
-        if api_key:
-            os.environ["OPENAI_API_KEY"] = api_key
+        return True
+    
+    def set_system_prompt(self, system_prompt):
+        """Set the system prompt"""
+        self.system_prompt = system_prompt
+        return True
     
     def __str__(self):
         """String representation of the configuration"""
         return f"model={self.model}, size={self.size}, quality={self.quality}, style={self.style}"
 
-# Create a global instance of OpenAIConfig
-openai_config = OpenAIConfig()
+# Create a global instance of ImageGenConfig
+gen_config = ImageGenConfig()
 
 # The yail_data will contain the image that is to be sent.  It
 # is protected with a Mutex so that when the image is being sent
@@ -164,6 +179,8 @@ camera_thread = None
 camera_done = False
 filenames = []
 camera_name = None
+last_prompt = None
+last_gen_model = None
 
 def prep_image_for_vbxe(image: Image.Image, target_width: int=YAIL_W, target_height: int=YAIL_H) -> Image.Image:
     logger.info(f'Image size: {image.size}')
@@ -456,14 +473,14 @@ def generate_image_with_openai(prompt: str, api_key: str = None, model: str = No
         str: URL of the generated image or None if generation failed
     """
     try:
-        # Use provided parameters or fall back to openai_config values
-        model = model or openai_config.model
-        size = size or openai_config.size
-        quality = quality or openai_config.quality
-        style = style or openai_config.style
+        # Use provided parameters or fall back to gen_config values
+        model = model or gen_config.model
+        size = size or gen_config.size
+        quality = quality or gen_config.quality
+        style = style or gen_config.style
         
         # Set API key from parameter, config, or environment variable
-        api_key = api_key or openai_config.api_key or os.environ.get("OPENAI_API_KEY")
+        api_key = api_key or gen_config.api_key or os.environ.get("OPENAI_API_KEY")
         
         # Debug: Print the model being used
         logger.info(f"DEBUG: Using model: {model}, type: {type(model)}")
@@ -504,6 +521,100 @@ def generate_image_with_openai(prompt: str, api_key: str = None, model: str = No
     except Exception as e:
         logger.error(f"Error generating image with OpenAI: {e}")
         return None
+
+def generate_image_with_gemini(prompt: str) -> str:
+    """
+    Generate an image using Google's Gemini API and return the URL or path to the saved image.
+    
+    Args:
+        prompt (str): The text prompt to generate an image from
+        
+    Returns:
+        str: Path to the saved image or None if generation failed
+    """
+    if not GEMINI_AVAILABLE:
+        logger.error("Google Generative AI library not available. Install with: pip install google-generativeai")
+        return None
+    
+    try:
+        logger.info(f"Generating image with Gemini model, prompt: '{prompt}'")
+        
+        # Generate image with Gemini
+        model = genai.GenerativeModel('gemini-2.0-flash-exp-image-generation')
+        response = model.generate_content(contents=prompt)
+        
+        # Extract and save the image
+        image_saved = False
+        image_path = None
+        
+        if response.candidates:
+            for part in response.candidates[0].content.parts:
+                if hasattr(part, 'inline_data') and part.inline_data:
+                    # Save the image to a file
+                    image_data = base64.b64decode(part.inline_data.data)
+                    image = Image.open(BytesIO(image_data))
+                    
+                    # Create a directory for generated images if it doesn't exist
+                    os.makedirs('generated_images', exist_ok=True)
+                    
+                    # Generate a unique filename based on timestamp
+                    timestamp = int(time.time())
+                    image_path = f"generated_images/gemini-{timestamp}.png"
+                    
+                    # Save the image
+                    image.save(image_path)
+                    image_saved = True
+                    
+                    logger.info(f"Image generated successfully with Gemini: {image_path}")
+                    break
+                elif hasattr(part, 'text') and part.text:
+                    logger.info(f"Gemini text response: {part.text}")
+        else:
+            logger.error("No candidates in Gemini response")
+        
+        if image_saved and image_path:
+            # Return the absolute path to the saved image
+            abs_path = os.path.abspath(image_path)
+            return abs_path
+        else:
+            logger.error("Failed to extract image from Gemini response")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error generating image with Gemini: {e}")
+        # Print full exception traceback for debugging
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return None
+
+def generate_image(prompt: str, model: str = None) -> str:
+    """
+    Generate an image using the specified model and return the URL or path.
+    
+    Args:
+        prompt (str): The text prompt to generate an image from
+        model (str, optional): The model to use. If None, uses the configured model.
+        
+    Returns:
+        str: URL or path to the generated image or None if generation failed
+    """
+    # Use the configured model if none is specified
+    model = model or gen_config.model
+    
+    logger.info(f"Generating image with model: {model}, prompt: '{prompt}'")
+    
+    # Generate image based on the model
+    if model.lower() == "gemini":
+        return generate_image_with_gemini(prompt)
+    else:
+        # Default to OpenAI for all other models
+        return generate_image_with_openai(
+            prompt,
+            model=model,
+            size=gen_config.size,
+            quality=gen_config.quality,
+            style=gen_config.style
+        )
 
 def camera_handler(gfx_mode: int) -> None:
     import pygame.camera
@@ -657,41 +768,76 @@ def stream_generated_image(client_socket: socket.socket, prompt: str, gfx_mode: 
     """
     logger.info(f"Generating image with prompt: '{prompt}'")
     
-    # Generate image using OpenAI
-    url = generate_image_with_openai(
-        prompt, 
-        model=openai_config.model, 
-        size=openai_config.size, 
-        quality=openai_config.quality, 
-        style=openai_config.style
-    )
+    # Generate image using the configured model
+    url_or_path = generate_image(prompt)
     
-    if url:
+    if url_or_path:
         # Stream the generated image to the client
-        if not stream_YAI(client_socket, gfx_mode, url=url):
-            logger.warning(f'Problem with generated image: {url}')
-            send_client_response(client_socket, "Failed to stream generated image", is_error=True)
+        if url_or_path.startswith('http'):
+            # It's a URL (from OpenAI)
+            if not stream_YAI(client_socket, gfx_mode, url=url_or_path):
+                logger.warning(f'Problem with generated image: {url_or_path}')
+                send_client_response(client_socket, "Failed to stream generated image", is_error=True)
+        else:
+            # It's a local file path (from Gemini)
+            if not stream_YAI(client_socket, gfx_mode, filepath=url_or_path):
+                logger.warning(f'Problem with generated image: {url_or_path}')
+                send_client_response(client_socket, "Failed to stream generated image", is_error=True)
     else:
-        logger.warning('Failed to generate image with OpenAI')
+        logger.warning('Failed to generate image')
         send_client_response(client_socket, "Failed to generate image", is_error=True)
 
-def handle_client_connection(client_socket: socket.socket) -> None:
+def stream_generated_image_gemini(client_socket: socket.socket, prompt: str, gfx_mode: int) -> None:
+    """
+    Generate an image with Gemini and stream it to the client.
+    
+    Args:
+        client_socket: The client socket to stream to
+        prompt: The text prompt for image generation
+        gfx_mode: The graphics mode to use
+    """
+    logger.info(f"Generating image with prompt: '{prompt}'")
+    
+    # Generate image using Gemini
+    image_path = generate_image_with_gemini(
+        prompt
+    )
+    
+    if image_path:
+        # Stream the generated image to the client
+        if not stream_YAI(client_socket, gfx_mode, filepath=image_path):
+            logger.warning(f'Problem with generated image: {image_path}')
+            send_client_response(client_socket, "Failed to stream generated image", is_error=True)
+    else:
+        logger.warning('Failed to generate image with Gemini')
+        send_client_response(client_socket, "Failed to generate image", is_error=True)
+
+def handle_client_connection(client_socket: socket.socket, thread_id: int) -> None:
+    """
+    Handle a client connection in a separate thread.
+    
+    Args:
+        client_socket: The client socket to handle
+        thread_id: The ID of this client thread for tracking
+    """
     global connections
     global camera_thread
     global camera_done
-    global YAIL_H
-    global openai_config
+    global last_prompt
+    global last_gen_model
+    global gen_config
 
-    logger.debug(f"handle_client_connection thread started: {threading.get_native_id()}")
+    logger.info(f"Starting Connection: {thread_id}")
+    
+    connections += 1
+    logger.info(f'Starting Connection: {connections}')
     
     gfx_mode = GRAPHICS_8
     client_mode = None
     last_prompt = None  # Store the last prompt for regeneration
 
-    connections = connections + 1
-    logger.info(f'Starting Connection: {connections}')
-
     try:
+        client_socket.settimeout(300)  # 5 minutes timeout
         done = False
         url_idx = 0
         tokens = []
@@ -722,20 +868,30 @@ def handle_client_connection(client_socket: socket.socket) -> None:
                 tokens.pop(0)
 
             elif tokens[0] == 'search':
-                client_mode = 'search'
-                urls = search_images(' '.join(tokens[1:]))
-                url_idx = random.randint(0, len(urls)-1)
-                url = urls[url_idx]
-                stream_random_image_from_urls(client_socket, urls, gfx_mode)
+                client_mode = 'generate'
+                # Join all tokens after 'search' as the prompt
+                prompt = ' '.join(tokens[1:])
+                logger.info(f"Received search {prompt} (redirecting to generate)")
+                last_prompt = prompt  # Store the prompt for later use with 'next' command
+                stream_generated_image(client_socket, prompt, gfx_mode)
                 tokens = []
 
             elif tokens[0] == 'generate' or tokens[0] == 'gen':
                 client_mode = 'generate'
-                # Join all tokens after 'generate' or 'gen' as the prompt
+                # Join all tokens after 'generate' as the prompt
                 prompt = ' '.join(tokens[1:])
                 logger.info(f"Received {tokens[0]} {prompt}")
                 last_prompt = prompt  # Store the prompt for later use with 'next' command
                 stream_generated_image(client_socket, prompt, gfx_mode)
+                tokens = []
+
+            elif tokens[0] == 'generate-gemini':
+                client_mode = 'generate-gemini'
+                # Join all tokens after 'generate-gemini' as the prompt
+                prompt = ' '.join(tokens[1:])
+                logger.info(f"Received {tokens[0]} {prompt}")
+                last_prompt = prompt  # Store the prompt for later use with 'next' command
+                stream_generated_image_gemini(client_socket, prompt, gfx_mode)
                 tokens = []
 
             elif tokens[0] == 'files':
@@ -745,7 +901,7 @@ def handle_client_connection(client_socket: socket.socket) -> None:
 
             elif tokens[0] == 'next':
                 if client_mode == 'search':
-                    stream_random_image_from_urls(client_socket, urls, gfx_mode)
+                    stream_generated_image(client_socket, last_prompt, gfx_mode)
                     tokens.pop(0)
                 elif client_mode == 'video':
                     send_yail_data(client_socket)
@@ -756,6 +912,13 @@ def handle_client_connection(client_socket: socket.socket) -> None:
                     prompt = last_prompt
                     logger.info(f"Regenerating image with prompt: '{prompt}'")
                     stream_generated_image(client_socket, prompt, gfx_mode)
+                    tokens.pop(0)
+                elif client_mode == 'generate-gemini':
+                    # For generate-gemini mode, we'll regenerate with the same prompt
+                    # The prompt is stored in last_prompt
+                    prompt = last_prompt
+                    logger.info(f"Regenerating image with prompt: '{prompt}'")
+                    stream_generated_image_gemini(client_socket, prompt, gfx_mode)
                     tokens.pop(0)
                 elif client_mode == 'files':
                     stream_random_image_from_files(client_socket, gfx_mode)
@@ -783,31 +946,31 @@ def handle_client_connection(client_socket: socket.socket) -> None:
                         tokens.pop(0)
                         
                         if param == "model":
-                            if openai_config.set_model(value):
+                            if gen_config.set_model(value):
                                 send_client_response(client_socket, f"OpenAI model set to {value}")
                             else:
                                 send_client_response(client_socket, "Invalid model. Use 'dall-e-3' or 'dall-e-2'", is_error=True)
                         
                         elif param == "size":
-                            if openai_config.set_size(value):
+                            if gen_config.set_size(value):
                                 send_client_response(client_socket, f"Image size set to {value}")
                             else:
                                 send_client_response(client_socket, "Invalid size. Use '1024x1024', '1792x1024', or '1024x1792'", is_error=True)
                         
                         elif param == "quality":
-                            if openai_config.set_quality(value):
+                            if gen_config.set_quality(value):
                                 send_client_response(client_socket, f"Image quality set to {value}")
                             else:
                                 send_client_response(client_socket, "Invalid quality. Use 'standard' or 'hd'", is_error=True)
                         
                         elif param == "style":
-                            if openai_config.set_style(value):
+                            if gen_config.set_style(value):
                                 send_client_response(client_socket, f"Image style set to {value}")
                             else:
                                 send_client_response(client_socket, "Invalid style. Use 'vivid' or 'natural'", is_error=True)
                         
                         elif param == "system_prompt":
-                            if openai_config.set_system_prompt(value):
+                            if gen_config.set_system_prompt(value):
                                 send_client_response(client_socket, f"System prompt set to {value}")
                             else:
                                 send_client_response(client_socket, "Failed to set system prompt", is_error=True)
@@ -815,9 +978,9 @@ def handle_client_connection(client_socket: socket.socket) -> None:
                         else:
                             send_client_response(client_socket, f"Unknown parameter '{param}'. Use 'model', 'size', 'quality', 'style', or 'system_prompt'", is_error=True)
                     else:
-                        send_client_response(client_socket, f"Current OpenAI config: {openai_config}")
+                        send_client_response(client_socket, f"Current OpenAI config: {gen_config}")
                 else:
-                    send_client_response(client_socket, f"Current OpenAI config: {openai_config}")
+                    send_client_response(client_socket, f"Current OpenAI config: {gen_config}")
 
             elif tokens[0] == 'quit':
                 done = True
@@ -829,17 +992,33 @@ def handle_client_connection(client_socket: socket.socket) -> None:
                 logger.info(f'Received {r_string}')
                 send_client_response(client_socket, "ACK!")
 
-    except Exception as ex:
-        logger.critical(f'Problem handling client {ex}')
-
+    except socket.timeout:
+        logger.warning(f"Client connection {thread_id} timed out")
+    except ConnectionResetError:
+        logger.warning(f"Client connection {thread_id} was reset by the client")
+    except BrokenPipeError:
+        logger.warning(f"Client connection {thread_id} has a broken pipe")
+    except Exception as e:
+        logger.error(f"Error handling client connection {thread_id}: {e}")
+        logger.error(traceback.format_exc())
     finally:
-        client_socket.close()
-        logger.info(f'Closing Connection: {connections}')
-        connections = connections - 1
-        if connections == 0:   # Maybe should look into killing this thread when there are no video connections.
-            camera_done = True
-            time.sleep(SOCKET_WAIT_TIME)
-            camera_thread = None
+        # Clean up resources
+        try:
+            client_socket.close()
+            logger.info(f"Closing Connection: {thread_id}")
+            
+            # Update connection counter
+            connections -= 1
+            logger.info(f"Active connections: {connections}")
+            
+            # Clean up camera thread if this was the last connection
+            if connections == 0:
+                camera_done = True
+                time.sleep(SOCKET_WAIT_TIME)
+                camera_thread = None
+                logger.info("Camera thread cleaned up")
+        except Exception as e:
+            logger.error(f"Error closing client socket for connection {thread_id}: {e}")
 
     logger.debug(f"handle_client_connection thread exiting: {threading.get_native_id()}")
 
@@ -870,8 +1049,37 @@ def F(file_path):
 
 def main():
     global camera_name
-    global openai_config
+    global gen_config
 
+    # Track active client threads
+    active_threads = []
+    
+    # Signal handler for graceful shutdown
+    def signal_handler(sig, frame):
+        logger.info("Shutting down YAIL server...")
+        
+        # Close the server socket
+        if 'server' in locals():
+            try:
+                server.close()
+                logger.info("Server socket closed")
+            except Exception as e:
+                logger.error(f"Error closing server socket: {e}")
+        
+        # Wait for all client threads to finish (with timeout)
+        if active_threads:
+            logger.info(f"Waiting for {len(active_threads)} client threads to finish...")
+            for thread in active_threads:
+                if thread.is_alive():
+                    thread.join(timeout=1.0)  # Wait up to 1 second for each thread
+        
+        logger.info("YAIL server shutdown complete")
+        sys.exit(0)
+    
+    # Register signal handlers
+    signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
+    signal.signal(signal.SIGTERM, signal_handler)  # Termination signal
+    
     # Initialize the image to send with something
     initial_image = Image.new("L", (YAIL_W,YAIL_H))
     update_yail_data(pack_shades(initial_image), GRAPHICS_8)
@@ -888,7 +1096,7 @@ def main():
         parser.add_argument('--port', nargs='+', default=None, help='Specify the port to listen too', required=False)
         parser.add_argument('--loglevel', nargs='+', default=None, help='The level of logging', required=False)
         parser.add_argument('--openai-api-key', type=str, help='OpenAI API key for image generation', required=False)
-        parser.add_argument('--openai-model', type=str, default='dall-e-3', choices=['dall-e-3', 'dall-e-2'], help='OpenAI image generation model to use', required=False)
+        parser.add_argument('--gen-model', type=str, default='dall-e-3', choices=['dall-e-3', 'dall-e-2', 'gemini'], help='Image generation model to use', required=False)
         parser.add_argument('--openai-size', type=str, default='1024x1024', choices=['1024x1024', '1792x1024', '1024x1792'], help='Image size for DALL-E 3', required=False)
         parser.add_argument('--openai-quality', type=str, default='standard', choices=['standard', 'hd'], help='Image quality for DALL-E 3', required=False)
         parser.add_argument('--openai-style', type=str, default='vivid', choices=['vivid', 'natural'], help='Image style for DALL-E 3', required=False)
@@ -899,19 +1107,19 @@ def main():
             camera_name = args.camera
         
         if args.openai_api_key:
-            openai_config.set_api_key(args.openai_api_key)
+            gen_config.set_api_key(args.openai_api_key)
         
-        if args.openai_model:
-            openai_config.set_model(args.openai_model)
+        if args.gen_model:
+            gen_config.set_model(args.gen_model)
             
         if args.openai_size:
-            openai_config.set_size(args.openai_size)
+            gen_config.set_size(args.openai_size)
             
         if args.openai_quality:
-            openai_config.set_quality(args.openai_quality)
+            gen_config.set_quality(args.openai_quality)
             
         if args.openai_style:
-            openai_config.set_style(args.openai_style)
+            gen_config.set_style(args.openai_style)
         
         if args.paths is not None and len(args.paths) == 1 and os.path.isdir(args.paths[0]):
             # If a single argument is passed and it's a directory
@@ -940,9 +1148,17 @@ def main():
         if args.port:
             bind_port = int(args.port[0])
 
+    # Create the server socket with SO_REUSEADDR option
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind((bind_ip, bind_port))
-    server.listen(10)  # max backlog of connections
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    
+    try:
+        server.bind((bind_ip, bind_port))
+        server.listen(10)  # max backlog of connections
+    except OSError as e:
+        logger.error(f"Error binding to {bind_ip}:{bind_port}: {e}")
+        logger.error("Port may already be in use. Try killing any existing YAIL processes.")
+        sys.exit(1)
 
     logger.info('='*50)
     logger.info(f'YAIL Server started successfully')
@@ -1007,14 +1223,19 @@ def main():
     logger.info('='*50)
 
     while True:
+        # Clean up finished threads from the active_threads list
+        active_threads[:] = [t for t in active_threads if t.is_alive()]
+        
+        # Accept new client connections
         client_sock, address = server.accept()
         logger.info(f'Accepted connection from {address[0]}:{address[1]}')
         client_handler = Thread(
             target=handle_client_connection,
-            args=(client_sock,)  # without comma you'd get a... TypeError: handle_client_connection() argument after * must be a sequence, not _socketobject
+            args=(client_sock, len(active_threads) + 1)  # thread_id is 1-based
         )
         client_handler.daemon = True
         client_handler.start()
+        active_threads.append(client_handler)
 
 if __name__ == "__main__":
     main()
