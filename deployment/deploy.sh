@@ -10,8 +10,11 @@ set -e
 SERVICE_NAME="fujinet-yail"
 SERVICE_FILE="${SERVICE_NAME}.service"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SERVER_DIR="${PROJECT_ROOT}/server"
 SERVICE_SOURCE="${SCRIPT_DIR}/${SERVICE_FILE}"
 SERVICE_DEST="/etc/systemd/system/${SERVICE_FILE}"
+FUJINET_USER="fujinet"
 
 # Check if script is run as root
 if [ "$EUID" -ne 0 ]; then
@@ -38,6 +41,53 @@ check_service() {
   fi
 }
 
+# Function to setup the virtual environment and install dependencies
+setup_environment() {
+  echo "Setting up virtual environment and installing dependencies..."
+  
+  # Check if fujinet user exists, create if not
+  if ! id -u "$FUJINET_USER" &>/dev/null; then
+    echo "Creating $FUJINET_USER user..."
+    useradd -m -s /bin/bash "$FUJINET_USER"
+  fi
+  
+  # Create installation directory if it doesn't exist
+  INSTALL_DIR="/opt/fujinet-yail-server"
+  if [ ! -d "$INSTALL_DIR" ]; then
+    echo "Creating installation directory at $INSTALL_DIR..."
+    mkdir -p "$INSTALL_DIR"
+  fi
+  
+  # Copy project files to installation directory
+  echo "Copying project files to $INSTALL_DIR..."
+  cp -r "$PROJECT_ROOT"/* "$INSTALL_DIR"
+  
+  # Set ownership
+  echo "Setting ownership to $FUJINET_USER..."
+  chown -R "$FUJINET_USER:$FUJINET_USER" "$INSTALL_DIR"
+  
+  # Setup virtual environment
+  echo "Setting up Python virtual environment..."
+  cd "$INSTALL_DIR/server"
+  if [ ! -d "venv" ]; then
+    echo "Creating new virtual environment..."
+    sudo -u "$FUJINET_USER" python3 -m venv venv
+  fi
+  
+  # Install dependencies
+  echo "Installing Python dependencies..."
+  sudo -u "$FUJINET_USER" bash -c "source venv/bin/activate && pip install -r requirements.txt"
+  
+  # Create env file if it doesn't exist
+  if [ ! -f "$INSTALL_DIR/server/env" ]; then
+    echo "Creating env file from example..."
+    cp "$INSTALL_DIR/deployment/env.example" "$INSTALL_DIR/server/env"
+    echo "NOTE: You need to edit $INSTALL_DIR/server/env to add your OpenAI API key"
+  fi
+  
+  echo "Environment setup complete."
+}
+
 # Function to install or update service
 install_service() {
   echo "Installing/updating systemd service..."
@@ -47,6 +97,9 @@ install_service() {
   
   # Set proper permissions
   chmod 644 "$SERVICE_DEST"
+  
+  # Update the YAIL_ROOT in the service file
+  sed -i "s|YAIL_ROOT=.*|YAIL_ROOT=/opt/fujinet-yail-server/server|g" "$SERVICE_DEST"
   
   # Reload systemd to recognize the new service
   systemctl daemon-reload
@@ -73,6 +126,9 @@ restart_service() {
 
 # Main execution
 echo "Deploying FujiNet YAIL Server systemd service..."
+
+# Setup the environment first
+setup_environment
 
 # Check if we need to update the service
 if check_service; then

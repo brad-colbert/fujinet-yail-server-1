@@ -591,8 +591,13 @@ def send_client_response(client_socket: socket.socket, message: str, is_error: b
     """
     prefix = "ERROR: " if is_error else "OK: "
     try:
-        message_packet = createErrorPacket(message.encode('utf-8'), gfx_mode=GRAPHICS_8) if is_error else None
-        client_socket.sendall(message_packet); #bytes(f"{prefix}{message}".encode('utf-8')))
+        if is_error:
+            message_packet = createErrorPacket(message.encode('utf-8'), gfx_mode=GRAPHICS_8)
+            client_socket.sendall(message_packet)
+        else:
+            # For non-error messages, send as plain text with OK prefix
+            client_socket.sendall(bytes(f"{prefix}{message}\r\n".encode('utf-8')))
+            
         if is_error:
             logger.warning(f"Sent error to client: {message}")
         else:
@@ -700,6 +705,14 @@ def handle_client_connection(client_socket: socket.socket) -> None:
             if len(tokens) == 0:
                 request = client_socket.recv(1024)
                 logger.info(f'Client request {request}')
+                
+                # Check if this looks like an HTTP request
+                if request.startswith(b'GET') or request.startswith(b'POST') or request.startswith(b'PUT') or request.startswith(b'DELETE') or request.startswith(b'HEAD'):
+                    logger.warning("HTTP request detected - sending 'Not Allowed' response")
+                    http_response = "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: 11\r\n\r\nNot Allowed"
+                    client_socket.sendall(http_response.encode('utf-8'))
+                    break
+                
                 r_string = request.decode('UTF-8')
                 tokens = r_string.rstrip(' \r\n').split(' ')
             logger.info(f'Tokens {tokens}')
@@ -722,10 +735,11 @@ def handle_client_connection(client_socket: socket.socket) -> None:
                 stream_random_image_from_urls(client_socket, urls, gfx_mode)
                 tokens = []
 
-            elif tokens[0] == 'generate':
+            elif tokens[0] == 'generate' or tokens[0] == 'gen':
                 client_mode = 'generate'
-                # Join all tokens after 'generate' as the prompt
+                # Join all tokens after 'generate' or 'gen' as the prompt
                 prompt = ' '.join(tokens[1:])
+                logger.info(f"Received {tokens[0]} {prompt}")
                 last_prompt = prompt  # Store the prompt for later use with 'next' command
                 stream_generated_image(client_socket, prompt, gfx_mode)
                 tokens = []
@@ -936,7 +950,54 @@ def main():
     server.bind((bind_ip, bind_port))
     server.listen(10)  # max backlog of connections
 
+    logger.info('='*50)
+    logger.info(f'YAIL Server started successfully')
     logger.info(f'Listening on {bind_ip}:{bind_port}')
+    
+    # Log all available network interfaces to help with debugging
+    logger.info('Network information:')
+    
+    # First try to get the IP using socket connections
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Connect to a public DNS server to determine the local IP
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        logger.info(f"  Local IP (via socket): {local_ip}")
+    except Exception as e:
+        logger.warning(f"  Could not determine IP via socket: {e}")
+    
+    # Try using hostname
+    try:
+        hostname = socket.gethostname()
+        logger.info(f"  Hostname: {hostname}")
+        try:
+            host_ip = socket.gethostbyname(hostname)
+            logger.info(f"  IP Address (via hostname): {host_ip}")
+        except Exception as e:
+            logger.warning(f"  Could not resolve hostname to IP: {e}")
+    except Exception as e:
+        logger.warning(f"  Could not determine hostname: {e}")
+    
+    # Try using netifaces if available
+    try:
+        import netifaces
+        logger.info('  Available network interfaces:')
+        for interface in netifaces.interfaces():
+            try:
+                addresses = netifaces.ifaddresses(interface)
+                if netifaces.AF_INET in addresses:
+                    for address in addresses[netifaces.AF_INET]:
+                        logger.info(f"    {interface}: {address.get('addr', 'unknown')}")
+            except Exception as e:
+                logger.warning(f"    Error getting info for interface {interface}: {e}")
+    except ImportError:
+        logger.warning("  netifaces package not available. Install with: pip install netifaces")
+    except Exception as e:
+        logger.warning(f"  Error using netifaces: {e}")
+    
+    logger.info('='*50)
 
     while True:
         client_sock, address = server.accept()
