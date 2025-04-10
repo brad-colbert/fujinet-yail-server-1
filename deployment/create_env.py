@@ -4,12 +4,15 @@ import os
 import sys
 
 def create_env_file():
-    """Create a .env file with OpenAI API key and configuration."""
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    """Create a env file with OpenAI API key and configuration."""
+    # Get the server directory path (one level up from deployment directory and then into server)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    server_dir = os.path.normpath(os.path.join(script_dir, '..', 'server'))
+    env_path = os.path.join(server_dir, 'env')
     
-    # Check if .env file already exists
+    # Check if env file already exists
     if os.path.exists(env_path):
-        overwrite = input(f".env file already exists at {env_path}. Overwrite? (y/n): ")
+        overwrite = input(f"env file already exists at {env_path}. Overwrite? (y/n): ")
         if overwrite.lower() != 'y':
             print("Operation cancelled.")
             return
@@ -74,7 +77,7 @@ def create_env_file():
             if not system_prompt.strip():
                 system_prompt = "You are an image generation assistant. Generate an image based on the user's description."
     
-    # Create .env file content
+    # Create env file content
     env_content = f"""# OpenAI API Configuration
 OPENAI_API_KEY={api_key}
 OPENAI_MODEL={model}
@@ -84,15 +87,16 @@ OPENAI_STYLE={style}
 OPENAI_SYSTEM_PROMPT="{system_prompt}"
 """
     
-    # Write to .env file
+    # Write to env file
     with open(env_path, 'w') as f:
         f.write(env_content)
     
-    print(f"\n.env file created successfully at {env_path}")
+    print(f"\nenv file created successfully at {env_path}")
     print("This file contains your API key and should not be committed to version control.")
     print("It has been added to .gitignore for your protection.")
     print("\nTo start the server with these settings, run:")
-    print("source .venv/bin/activate")
+    print(f"cd {server_dir}")
+    print("source venv/bin/activate")
     print("python yail.py --loglevel DEBUG")
 
 if __name__ == "__main__":

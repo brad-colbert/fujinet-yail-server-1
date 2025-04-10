@@ -21,13 +21,13 @@ import sys
 import openai
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+# Load environment variables from env file
+env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'env')
 if os.path.exists(env_path):
     load_dotenv(env_path)
     print(f"Loaded environment variables from {env_path}")
 else:
-    print(f"No .env file found at {env_path}. Using default environment variables.")
+    print(f"No env file found at {env_path}. Using default environment variables.")
 
 # Debug: Print loaded environment variables
 print(f"OPENAI_MODEL from environment: {os.environ.get('OPENAI_MODEL', 'not set')}")

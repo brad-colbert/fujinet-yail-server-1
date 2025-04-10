@@ -1,0 +1,18 @@
+[Unit]
+Description=FujiNet YAIL Server
+After=network.target
+
+[Service]
+# Set this to the directory where yail.py is located
+Environment="YAIL_ROOT=/opt/fujinet-yail-server/server"
+Type=simple
+User=fujinet
+WorkingDirectory=${YAIL_ROOT}
+ExecStart=/usr/bin/python3 ${YAIL_ROOT}/yail.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
