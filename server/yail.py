@@ -195,13 +195,14 @@ def convertToYai(image_data: bytearray, gfx_mode: int) -> bytearray:
     image_yai += struct.pack("<H", ttlbytes) # num bytes height x width
     image_yai += bytearray(image_data)       # image
 
+    logger.debug(f'YAI size: {len(image_yai)}')
+
     return image_yai
 
 def createErrorPacket(error_message: str, gfx_mode: int) -> bytearray:
     import struct
 
-    #ttlbytes = YAIL_W * YAIL_H; # image_data.shape[0] * image_data.shape[1]
-    logger.info(f'Error message length: {len(error_message)}')
+    logger.debug(f'Error message length: {len(error_message)}')
 
     error_packets = bytearray()
     error_packets += bytes([1, 4, 0])                      # version
@@ -217,9 +218,9 @@ def createErrorPacket(error_message: str, gfx_mode: int) -> bytearray:
 def convertToYaiVBXE(image_data: bytes, palette_data: bytes, gfx_mode: int) -> bytearray:
     import struct
 
-    #ttlbytes = YAIL_W * YAIL_H; # image_data.shape[0] * image_data.shape[1]
-    logger.info(f'Image data size: {len(image_data)}')
-    logger.info(f'Palette data size: {len(palette_data)}')
+    # Log information about the source image
+    logger.debug(f'Image data size: {len(image_data)}')
+    logger.debug(f'Palette data size: {len(palette_data)}')
 
     image_yai = bytearray()
     image_yai += bytes([1, 4, 0])            # version
@@ -232,7 +233,7 @@ def convertToYaiVBXE(image_data: bytes, palette_data: bytes, gfx_mode: int) -> b
     image_yai += struct.pack("<I", len(image_data)) # num bytes height x width
     image_yai += bytearray(image_data)       # image
 
-    logger.info(f'YAI size: {len(image_yai)}')
+    logger.debug(f'YAI size: {len(image_yai)}')
 
     return image_yai
 
@@ -303,9 +304,20 @@ def stream_YAI(client: str, gfx_mode: int, url: str = None, filepath: str = None
             image = Image.open(filepath)
 
         if gfx_mode == GRAPHICS_8 or gfx_mode == GRAPHICS_9:
+            # Log information about the source image
+            logger.debug(f'Source Image size: {image.size}')
+            logger.debug(f'Source Image mode: {image.mode}')
+            logger.debug(f'Source Image format: {image.format}')
+            logger.debug(f'Source Image info: {image.info}')
+
             gray = image.convert(mode='L')
             gray = fix_aspect(gray)
             gray = gray.resize((YAIL_W,YAIL_H), Image.LANCZOS)
+
+            logger.debug(f'Processed Image size: {image.size}')
+            logger.debug(f'Processed Image mode: {image.mode}')
+            logger.debug(f'Processed Image format: {image.format}')
+            logger.debug(f'Processed Image info: {image.info}')
 
             if gfx_mode == GRAPHICS_8:
                 gray_dithered = dither_image(gray)
