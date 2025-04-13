@@ -270,11 +270,11 @@ def stream_YAI(client: str, gfx_mode: int, url: str = None, filepath: str = None
     # download the body of response by chunk, not immediately
     try:
         if url is not None:
-            logger.info(f'Loading {url} {url.encode()}')
+            logger.info(f'Loading {url}')
 
             file_size = 0
 
-            response = requests.get(url, stream=True, timeout=30)
+            response = requests.get(url, stream=True, timeout=5)
 
             # get the file name
             filepath = ''
@@ -288,7 +288,7 @@ def stream_YAI(client: str, gfx_mode: int, url: str = None, filepath: str = None
 
             # progress bar, changing the unit to bytes instead of iteration (default by tqdm)
             image_data = b''
-            progress = tqdm(response.iter_content(1024), f"Downloading {filepath}", total=file_size, unit="B", unit_scale=True, unit_divisor=1024)
+            progress = tqdm(response.iter_content(256), f"Downloading {filepath}", total=file_size, unit="B", unit_scale=True, unit_divisor=256)
             for data in progress:
                 # collect all the data
                 image_data += data
@@ -401,7 +401,7 @@ def stream_random_image_from_urls(client_socket: socket.socket, urls: list, gfx_
         logger.warning(f'Problem with {url} trying another...')
         url_idx = random.randint(0, len(urls)-1)
         url = urls[url_idx]
-        time.sleep(SOCKET_WAIT_TIME)
+        time.sleep(SOCKET_WAIT_TIME)  # Give some breathing room.  Sleep for a second
 
 def stream_random_image_from_files(client_socket: socket.socket, gfx_mode: int) -> None:
     """
@@ -530,6 +530,7 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
     try:
         client_socket.settimeout(300)  # 5 minutes timeout
         done = False
+        urls = []
         url_idx = 0
         tokens = []
         while not done:
@@ -566,8 +567,8 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
                 # Join all tokens after 'search' as the search term
                 prompt = ' '.join(tokens[1:])
                 logger.info(f"Received search {prompt}")
-                last_prompt = prompt  # Store the prompt for later use with 'next' command
-                stream_random_image_from_urls(client_socket, search_images(prompt), gfx_mode)
+                urls = search_images(prompt)
+                stream_random_image_from_urls(client_socket, urls, gfx_mode)
                 tokens = []
 
             elif tokens[0][:3] == 'gen':
@@ -586,7 +587,7 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
 
             elif tokens[0] == 'next':
                 if client_mode == 'search':
-                    stream_random_image_from_urls(client_socket, search_images(last_prompt), gfx_mode)
+                    stream_random_image_from_urls(client_socket, urls, gfx_mode)
                     tokens.pop(0)
                 elif client_mode == 'video':
                     send_yail_data(client_socket)
