@@ -60,8 +60,9 @@ GRAPHICS_8 = 2
 GRAPHICS_9 = 4
 GRAPHICS_11 = 8
 VBXE = 16
+# These need to be generalized.  The server/client protocol should specify this.
 YAIL_W = 320
-YAIL_H = 192
+YAIL_H = 220
 VBXE_W = 640
 VBXE_H = 480
 
@@ -557,7 +558,7 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
                 stream_random_image_from_urls(client_socket, search_images(prompt), gfx_mode)
                 tokens = []
 
-            elif tokens[0] == 'generate' or tokens[0] == 'gen':
+            elif tokens[0][:3] == 'gen':
                 client_mode = 'generate'
                 # Join all tokens after 'generate' as the prompt
                 prompt = ' '.join(tokens[1:])
@@ -791,21 +792,6 @@ def main():
     args = parser.parse_args()
 
     if args:
-        if args.openai_api_key:
-            gen_config.set_api_key(args.openai_api_key)
-        
-        if args.gen_model:
-            gen_config.set_model(args.gen_model)
-            
-        if args.openai_size:
-            gen_config.set_size(args.openai_size)
-            
-        if args.openai_quality:
-            gen_config.set_quality(args.openai_quality)
-            
-        if args.openai_style:
-            gen_config.set_style(args.openai_style)
-        
         if args.paths is not None and len(args.paths) == 1 and os.path.isdir(args.paths[0]):
             # If a single argument is passed and it's a directory
             directory_path = args.paths[0]
@@ -830,15 +816,10 @@ def main():
             elif loglevel == 'CRITICAL':
                 logger.setLevel(logging.CRITICAL)
 
-        if args.port:
-            bind_port = int(args.port[0])
-
-        # Initialize camera if specified
-        if args.camera:
-            if init_camera(args.camera):
-                logger.info(f"Camera initialized: {args.camera}")
-            else:
-                logger.warning(f"Failed to initialize camera: {args.camera}")
+    # Precedence order of settings:
+    # 1. Environment variables
+    # 2. Env file overrides Environment variables
+    # 3. Command line arguments override env file and environment variables
 
     # Load environment variables from env file
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'env')
@@ -859,11 +840,6 @@ def main():
                         logger.warning(f"Invalid line in env file: {line}")
     else:
         logger.info(f"No env file found at {env_path}. Using default environment variables.")
-    
-    # Override model from command line if provided
-    if args.gen_model:
-        logger.info(f"Overriding GEN_MODEL from command line: {args.gen_model}")
-        os.environ["GEN_MODEL"] = args.gen_model
 
     # Log all relevant environment variables
     logger.info("Environment Variables:")
@@ -885,6 +861,23 @@ def main():
         logger.info(f"Is OpenAI model: {gen_config.is_openai_model()}")
     else:
         logger.error("Failed to initialize image generation configuration")
+
+    # Args to override settings that were in either the environment or env file 
+    if args:
+        if args.openai_api_key:
+            gen_config.set_api_key(args.openai_api_key[0])
+        
+        if args.gen_model:
+            gen_config.set_model(args.gen_model)
+            
+        if args.openai_size:
+            gen_config.set_size(args.openai_size)
+            
+        if args.openai_quality:
+            gen_config.set_quality(args.openai_quality)
+            
+        if args.openai_style:
+            gen_config.set_style(args.openai_style)
 
     # Create the server socket with SO_REUSEADDR option
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
