@@ -574,8 +574,9 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
             elif tokens[0][:3] == 'gen':
                 client_mode = 'generate'
                 # Join all tokens after 'generate' as the prompt
-                prompt = ' '.join(tokens[1:])
-                logger.info(f"Received {tokens[0]} {prompt}")
+                ai_model_name = tokens[1]
+                prompt = ' '.join(tokens[2:])
+                logger.info(f"Received {tokens[0]} model={ai_model_name} prompt={prompt}")
                 last_prompt = prompt  # Store the prompt for later use with 'next' command
                 stream_generated_image(client_socket, prompt, gfx_mode)
                 tokens = []
