@@ -60,8 +60,9 @@ GRAPHICS_8 = 2
 GRAPHICS_9 = 4
 GRAPHICS_11 = 8
 VBXE = 16
+# These need to be generalized.  The server/client protocol should specify this.
 YAIL_W = 320
-YAIL_H = 192
+YAIL_H = 220
 VBXE_W = 640
 VBXE_H = 480
 
@@ -194,13 +195,14 @@ def convertToYai(image_data: bytearray, gfx_mode: int) -> bytearray:
     image_yai += struct.pack("<H", ttlbytes) # num bytes height x width
     image_yai += bytearray(image_data)       # image
 
+    logger.debug(f'YAI size: {len(image_yai)}')
+
     return image_yai
 
 def createErrorPacket(error_message: str, gfx_mode: int) -> bytearray:
     import struct
 
-    #ttlbytes = YAIL_W * YAIL_H; # image_data.shape[0] * image_data.shape[1]
-    logger.info(f'Error message length: {len(error_message)}')
+    logger.debug(f'Error message length: {len(error_message)}')
 
     error_packets = bytearray()
     error_packets += bytes([1, 4, 0])                      # version
@@ -216,9 +218,9 @@ def createErrorPacket(error_message: str, gfx_mode: int) -> bytearray:
 def convertToYaiVBXE(image_data: bytes, palette_data: bytes, gfx_mode: int) -> bytearray:
     import struct
 
-    #ttlbytes = YAIL_W * YAIL_H; # image_data.shape[0] * image_data.shape[1]
-    logger.info(f'Image data size: {len(image_data)}')
-    logger.info(f'Palette data size: {len(palette_data)}')
+    # Log information about the source image
+    logger.debug(f'Image data size: {len(image_data)}')
+    logger.debug(f'Palette data size: {len(palette_data)}')
 
     image_yai = bytearray()
     image_yai += bytes([1, 4, 0])            # version
@@ -231,7 +233,7 @@ def convertToYaiVBXE(image_data: bytes, palette_data: bytes, gfx_mode: int) -> b
     image_yai += struct.pack("<I", len(image_data)) # num bytes height x width
     image_yai += bytearray(image_data)       # image
 
-    logger.info(f'YAI size: {len(image_yai)}')
+    logger.debug(f'YAI size: {len(image_yai)}')
 
     return image_yai
 
@@ -268,11 +270,11 @@ def stream_YAI(client: str, gfx_mode: int, url: str = None, filepath: str = None
     # download the body of response by chunk, not immediately
     try:
         if url is not None:
-            logger.info(f'Loading {url} {url.encode()}')
+            logger.info(f'Loading {url}')
 
             file_size = 0
 
-            response = requests.get(url, stream=True, timeout=30)
+            response = requests.get(url, stream=True, timeout=5)
 
             # get the file name
             filepath = ''
@@ -286,7 +288,7 @@ def stream_YAI(client: str, gfx_mode: int, url: str = None, filepath: str = None
 
             # progress bar, changing the unit to bytes instead of iteration (default by tqdm)
             image_data = b''
-            progress = tqdm(response.iter_content(1024), f"Downloading {filepath}", total=file_size, unit="B", unit_scale=True, unit_divisor=1024)
+            progress = tqdm(response.iter_content(256), f"Downloading {filepath}", total=file_size, unit="B", unit_scale=True, unit_divisor=256)
             for data in progress:
                 # collect all the data
                 image_data += data
@@ -302,9 +304,20 @@ def stream_YAI(client: str, gfx_mode: int, url: str = None, filepath: str = None
             image = Image.open(filepath)
 
         if gfx_mode == GRAPHICS_8 or gfx_mode == GRAPHICS_9:
+            # Log information about the source image
+            logger.debug(f'Source Image size: {image.size}')
+            logger.debug(f'Source Image mode: {image.mode}')
+            logger.debug(f'Source Image format: {image.format}')
+            logger.debug(f'Source Image info: {image.info}')
+
             gray = image.convert(mode='L')
             gray = fix_aspect(gray)
             gray = gray.resize((YAIL_W,YAIL_H), Image.LANCZOS)
+
+            logger.debug(f'Processed Image size: {image.size}')
+            logger.debug(f'Processed Image mode: {image.mode}')
+            logger.debug(f'Processed Image format: {image.format}')
+            logger.debug(f'Processed Image info: {image.info}')
 
             if gfx_mode == GRAPHICS_8:
                 gray_dithered = dither_image(gray)
@@ -388,7 +401,7 @@ def stream_random_image_from_urls(client_socket: socket.socket, urls: list, gfx_
         logger.warning(f'Problem with {url} trying another...')
         url_idx = random.randint(0, len(urls)-1)
         url = urls[url_idx]
-        time.sleep(SOCKET_WAIT_TIME)
+        time.sleep(SOCKET_WAIT_TIME)  # Give some breathing room.  Sleep for a second
 
 def stream_random_image_from_files(client_socket: socket.socket, gfx_mode: int) -> None:
     """
@@ -517,6 +530,7 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
     try:
         client_socket.settimeout(300)  # 5 minutes timeout
         done = False
+        urls = []
         url_idx = 0
         tokens = []
         while not done:
@@ -553,15 +567,16 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
                 # Join all tokens after 'search' as the search term
                 prompt = ' '.join(tokens[1:])
                 logger.info(f"Received search {prompt}")
-                last_prompt = prompt  # Store the prompt for later use with 'next' command
-                stream_random_image_from_urls(client_socket, search_images(prompt), gfx_mode)
+                urls = search_images(prompt)
+                stream_random_image_from_urls(client_socket, urls, gfx_mode)
                 tokens = []
 
-            elif tokens[0] == 'generate' or tokens[0] == 'gen':
+            elif tokens[0][:3] == 'gen':
                 client_mode = 'generate'
                 # Join all tokens after 'generate' as the prompt
-                prompt = ' '.join(tokens[1:])
-                logger.info(f"Received {tokens[0]} {prompt}")
+                ai_model_name = tokens[1]
+                prompt = ' '.join(tokens[2:])
+                logger.info(f"Received {tokens[0]} model={ai_model_name} prompt={prompt}")
                 last_prompt = prompt  # Store the prompt for later use with 'next' command
                 stream_generated_image(client_socket, prompt, gfx_mode)
                 tokens = []
@@ -573,7 +588,7 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
 
             elif tokens[0] == 'next':
                 if client_mode == 'search':
-                    stream_random_image_from_urls(client_socket, search_images(last_prompt), gfx_mode)
+                    stream_random_image_from_urls(client_socket, urls, gfx_mode)
                     tokens.pop(0)
                 elif client_mode == 'video':
                     send_yail_data(client_socket)
@@ -791,21 +806,6 @@ def main():
     args = parser.parse_args()
 
     if args:
-        if args.openai_api_key:
-            gen_config.set_api_key(args.openai_api_key)
-        
-        if args.gen_model:
-            gen_config.set_model(args.gen_model)
-            
-        if args.openai_size:
-            gen_config.set_size(args.openai_size)
-            
-        if args.openai_quality:
-            gen_config.set_quality(args.openai_quality)
-            
-        if args.openai_style:
-            gen_config.set_style(args.openai_style)
-        
         if args.paths is not None and len(args.paths) == 1 and os.path.isdir(args.paths[0]):
             # If a single argument is passed and it's a directory
             directory_path = args.paths[0]
@@ -830,15 +830,10 @@ def main():
             elif loglevel == 'CRITICAL':
                 logger.setLevel(logging.CRITICAL)
 
-        if args.port:
-            bind_port = int(args.port[0])
-
-        # Initialize camera if specified
-        if args.camera:
-            if init_camera(args.camera):
-                logger.info(f"Camera initialized: {args.camera}")
-            else:
-                logger.warning(f"Failed to initialize camera: {args.camera}")
+    # Precedence order of settings:
+    # 1. Environment variables
+    # 2. Env file overrides Environment variables
+    # 3. Command line arguments override env file and environment variables
 
     # Load environment variables from env file
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'env')
@@ -859,11 +854,6 @@ def main():
                         logger.warning(f"Invalid line in env file: {line}")
     else:
         logger.info(f"No env file found at {env_path}. Using default environment variables.")
-    
-    # Override model from command line if provided
-    if args.gen_model:
-        logger.info(f"Overriding GEN_MODEL from command line: {args.gen_model}")
-        os.environ["GEN_MODEL"] = args.gen_model
 
     # Log all relevant environment variables
     logger.info("Environment Variables:")
@@ -885,6 +875,23 @@ def main():
         logger.info(f"Is OpenAI model: {gen_config.is_openai_model()}")
     else:
         logger.error("Failed to initialize image generation configuration")
+
+    # Args to override settings that were in either the environment or env file 
+    if args:
+        if args.openai_api_key:
+            gen_config.set_api_key(args.openai_api_key[0])
+        
+        if args.gen_model:
+            gen_config.set_model(args.gen_model)
+            
+        if args.openai_size:
+            gen_config.set_size(args.openai_size)
+            
+        if args.openai_quality:
+            gen_config.set_quality(args.openai_quality)
+            
+        if args.openai_style:
+            gen_config.set_style(args.openai_style)
 
     # Create the server socket with SO_REUSEADDR option
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
