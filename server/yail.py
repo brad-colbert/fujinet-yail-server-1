@@ -237,12 +237,58 @@ def convertToYaiVBXE(image_data: bytes, palette_data: bytes, gfx_mode: int) -> b
 
     return image_yai
 
+def convertImageToYAIL(image: Image.Image, gfx_mode: int) -> bytearray:
+    # Log information about the source image
+    logger.debug(f'Source Image size: {image.size}')
+    logger.debug(f'Source Image mode: {image.mode}')
+    logger.debug(f'Source Image format: {image.format}')
+    logger.debug(f'Source Image info: {image.info}')
+
+    if gfx_mode == GRAPHICS_8 or gfx_mode == GRAPHICS_9:
+        gray = image.convert(mode='L')
+        gray = fix_aspect(gray)
+        gray = gray.resize((YAIL_W,YAIL_H), Image.LANCZOS)
+
+        logger.debug(f'Processed Image size: {image.size}')
+        logger.debug(f'Processed Image mode: {image.mode}')
+        logger.debug(f'Processed Image format: {image.format}')
+        logger.debug(f'Processed Image info: {image.info}')
+
+        if gfx_mode == GRAPHICS_8:
+            gray_dithered = dither_image(gray)
+            image_data = pack_bits(gray_dithered)
+        elif gfx_mode == GRAPHICS_9:
+            image_data = pack_shades(gray)
+
+        image_yai = convertToYai(image_data, gfx_mode)
+
+    else: # gfx_mode == VBXE:
+        # Make the image fit out screen format but preserve it's aspect ratio
+        image_resized = prep_image_for_vbxe(image, target_width=320, target_height=240)
+        # Convert the image to use a palette
+        image_resized = image_resized.convert('P', palette=Image.ADAPTIVE, colors=256)
+        logger.info(f'Image size: {image_resized.size}')
+        #image_resized.show()
+        # Get the palette
+        palette = image_resized.getpalette()
+        # Get the image data
+        image_resized = image_resized.tobytes()
+        logger.info(f'Image data size: {len(image_resized)}')
+        # Offset the palette entries by one
+        offset_palette = [0] * 3 + palette[:-3]
+        # Offset the image data by one
+        offset_image_data = bytes((byte + 1) % 256 for byte in image_resized)
+
+        image_yai = convertToYaiVBXE(offset_image_data, offset_palette, gfx_mode)
+
+    return image_yai
+
 def update_yail_data(data: np.ndarray, gfx_mode: int, thread_safe: bool = True) -> None:
     global yail_data
     if thread_safe:
         yail_mutex.acquire()
     try:
-        yail_data = convertToYai(data, gfx_mode)
+        yail_data = data #convertToYai(data, gfx_mode)
     finally:
         if thread_safe:
             yail_mutex.release()
@@ -303,48 +349,7 @@ def stream_YAI(client: str, gfx_mode: int, url: str = None, filepath: str = None
         elif filepath is not None:
             image = Image.open(filepath)
 
-        if gfx_mode == GRAPHICS_8 or gfx_mode == GRAPHICS_9:
-            # Log information about the source image
-            logger.debug(f'Source Image size: {image.size}')
-            logger.debug(f'Source Image mode: {image.mode}')
-            logger.debug(f'Source Image format: {image.format}')
-            logger.debug(f'Source Image info: {image.info}')
-
-            gray = image.convert(mode='L')
-            gray = fix_aspect(gray)
-            gray = gray.resize((YAIL_W,YAIL_H), Image.LANCZOS)
-
-            logger.debug(f'Processed Image size: {image.size}')
-            logger.debug(f'Processed Image mode: {image.mode}')
-            logger.debug(f'Processed Image format: {image.format}')
-            logger.debug(f'Processed Image info: {image.info}')
-
-            if gfx_mode == GRAPHICS_8:
-                gray_dithered = dither_image(gray)
-                image_data = pack_bits(gray_dithered)
-            elif gfx_mode == GRAPHICS_9:
-                image_data = pack_shades(gray)
-
-            image_yai = convertToYai(image_data, gfx_mode)
-
-        else:  # VBXE mode
-            # Make the image fit out screen format but preserve it's aspect ratio
-            image_resized = prep_image_for_vbxe(image, target_width=320, target_height=240)
-            # Convert the image to use a palette
-            image_resized = image_resized.convert('P', palette=Image.ADAPTIVE, colors=256)
-            logger.info(f'Image size: {image_resized.size}')
-            #image_resized.show()
-            # Get the palette
-            palette = image_resized.getpalette()
-            # Get the image data
-            image_resized = image_resized.tobytes()
-            logger.info(f'Image data size: {len(image_resized)}')
-            # Offset the palette entries by one
-            offset_palette = [0] * 3 + palette[:-3]
-            # Offset the image data by one
-            offset_image_data = bytes((byte + 1) % 256 for byte in image_resized)
-
-            image_yai = convertToYaiVBXE(offset_image_data, offset_palette, gfx_mode)
+        image_yai = convertImageToYAIL(image, gfx_mode)
 
         client.sendall(image_yai)
 
@@ -556,7 +561,7 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
                     # Pass the necessary image processing functions
                     start_camera_thread(
                         gfx_mode, 
-                        process_image_func=lambda img: fix_aspect(img.convert('L'), crop=True).resize((YAIL_W, YAIL_H), Image.LANCZOS),
+                        process_image_func=lambda img: convertImageToYAIL(img, gfx_mode), #lambda img: fix_aspect(img.convert('L'), crop=True).resize((YAIL_W, YAIL_H), Image.LANCZOS),
                         update_data_func=update_yail_data
                     )
                 send_yail_data(client_socket)
@@ -785,8 +790,8 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)  # Termination signal
     
     # Initialize the image to send with something
-    initial_image = Image.new("L", (YAIL_W,YAIL_H))
-    update_yail_data(pack_shades(initial_image), GRAPHICS_8)
+    initial_image = convertImageToYAIL(Image.new("L", (YAIL_W,YAIL_H)), GRAPHICS_8)
+    update_yail_data(initial_image, GRAPHICS_8) #pack_shades(initial_image), GRAPHICS_8)
 
     bind_ip = '0.0.0.0'
     bind_port = 5556
