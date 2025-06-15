@@ -139,6 +139,7 @@ def camera_handler(gfx_mode: int, process_image_func, update_data_func) -> None:
     """
     global camera_done
     global camera_image
+    camera_name = None
     
     if not PYGAME_AVAILABLE:
         logger.error("Cannot start camera handler: pygame not available")
@@ -181,7 +182,7 @@ def camera_handler(gfx_mode: int, process_image_func, update_data_func) -> None:
                     camera_image = processed_img
                 
                 # Update the image data for streaming
-                update_data_func(processed_img, gfx_mode, thread_safe=True)
+                update_data_func(np.array(processed_img), gfx_mode, thread_safe=True)
                 
                 # Sleep to control frame rate
                 time.sleep(0.1)
