@@ -23,6 +23,7 @@ from io import BytesIO
 import base64
 import signal
 import threading
+import traceback
 
 # Import image generation functionality from yail_gen module
 from yail_gen import (
@@ -40,12 +41,7 @@ from yail_gen import (
 from yail_camera import (
     init_camera,
     capture_camera_image,
-    start_camera_thread,
-    stop_camera_thread,
-    get_camera_image,
-    camera_done,
-    camera_thread,
-    camera_name,
+    shutdown_camera,
     PYGAME_AVAILABLE
 )
 
@@ -75,9 +71,6 @@ ERROR_BLOCK = 0xFF
 # Global variables
 yail_data = bytearray()
 yail_mutex = threading.Lock()
-camera_thread = None
-camera_running = False
-latest_camera_image = None
 active_client_threads = []  # Track active client threads
 connections = 0
 filenames = []
@@ -517,7 +510,7 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
         client_socket: The client socket to handle
         thread_id: The ID of this client thread for tracking
     """
-    global camera_thread, camera_running, active_client_threads
+    global active_client_threads
     global last_prompt
     global last_gen_model
     global gen_config
@@ -541,7 +534,7 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
         while not done:
             if len(tokens) == 0:
                 request = client_socket.recv(1024)
-                logger.info(f'Client request {request}')
+                logger.info(f'{thread_id} Client request {request}')
                 
                 # Check if this looks like an HTTP request
                 if request.startswith(b'GET') or request.startswith(b'POST') or request.startswith(b'PUT') or request.startswith(b'DELETE') or request.startswith(b'HEAD'):
@@ -552,19 +545,14 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
                 
                 r_string = request.decode('UTF-8')
                 tokens = r_string.rstrip(' \r\n').split(' ')
-            logger.info(f'Tokens {tokens}')
+            logger.info(f'{thread_id} Tokens {tokens}')
 
             if tokens[0] == 'video':
                 client_mode = 'video'
-                if camera_thread is None:
-                    # Start the camera thread with the current graphics mode
-                    # Pass the necessary image processing functions
-                    start_camera_thread(
-                        gfx_mode, 
-                        process_image_func=lambda img: convertImageToYAIL(img, gfx_mode), #lambda img: fix_aspect(img.convert('L'), crop=True).resize((YAIL_W, YAIL_H), Image.LANCZOS),
-                        update_data_func=update_yail_data
-                    )
-                send_yail_data(client_socket)
+                # Send a single frame from the camera to trigger the "next" response
+                vid_frame = capture_camera_image(YAIL_W, YAIL_H)
+                vid_frame_yail = convertImageToYAIL(vid_frame, gfx_mode)
+                client_socket.sendall(vid_frame_yail)
                 tokens.pop(0)
 
             elif tokens[0] == 'search':
@@ -581,7 +569,7 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
                 # Join all tokens after 'generate' as the prompt
                 ai_model_name = tokens[1]
                 prompt = ' '.join(tokens[2:])
-                logger.info(f"Received {tokens[0]} model={ai_model_name} prompt={prompt}")
+                logger.info(f"{thread_id} Received {tokens[0]} model={ai_model_name} prompt={prompt}")
                 last_prompt = prompt  # Store the prompt for later use with 'next' command
                 stream_generated_image(client_socket, prompt, gfx_mode)
                 tokens = []
@@ -596,13 +584,16 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
                     stream_random_image_from_urls(client_socket, urls, gfx_mode)
                     tokens.pop(0)
                 elif client_mode == 'video':
-                    send_yail_data(client_socket)
+                    vid_frame = capture_camera_image(YAIL_W, YAIL_H)
+                    vid_frame_yail = convertImageToYAIL(vid_frame, gfx_mode)
+                    client_socket.sendall(vid_frame_yail)
+                    #send_yail_data(client_socket)
                     tokens.pop(0)
                 elif client_mode == 'generate':
                     # For generate mode, we'll regenerate with the same prompt
                     # The prompt is stored in last_prompt
                     prompt = last_prompt
-                    logger.info(f"Regenerating image with prompt: '{prompt}'")
+                    logger.info(f"{thread_id} Regenerating image with prompt: '{prompt}'")
                     stream_generated_image(client_socket, prompt, gfx_mode)
                     tokens.pop(0)
                 elif client_mode == 'files':
@@ -673,7 +664,7 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
                 client_mode = 'generate'
                 # Join all tokens after 'gen' as the prompt
                 prompt = ' '.join(tokens[1:])
-                logger.info(f"Received gen {prompt}")
+                logger.info(f"{thread_id} Received gen {prompt}")
                 last_prompt = prompt  # Store the prompt for later use with 'next' command
                 stream_generated_image(client_socket, prompt, gfx_mode)
                 tokens = []
@@ -682,7 +673,7 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
                 client_mode = 'generate'
                 # Join all tokens after 'gen-gemini' as the prompt
                 prompt = ' '.join(tokens[1:])
-                logger.info(f"Received gen-gemini {prompt}")
+                logger.info(f"{thread_id} Received gen-gemini {prompt}")
                 last_prompt = prompt  # Store the prompt for later use with 'next' command
                 stream_generated_image_gemini(client_socket, prompt, gfx_mode)
                 tokens = []
@@ -694,7 +685,7 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
             else:
                 tokens = [] # reset tokens if unrecognized command
                 r_string = r_string.rstrip(" \r\n")   # strip whitespace
-                logger.info(f'Received {r_string}')
+                logger.info(f'{thread_id} Received {r_string}')
                 send_client_response(client_socket, "ACK!")
 
     except socket.timeout:
@@ -715,11 +706,7 @@ def handle_client_connection(client_socket: socket.socket, thread_id: int) -> No
             # Update connection counter
             connections -= 1
             logger.info(f"Active connections: {connections}")
-            
-            # Clean up camera thread if this was the last connection
-            if connections == 0:
-                stop_camera_thread()
-                logger.info("Camera thread cleaned up")
+
         except Exception as e:
             logger.error(f"Error closing client socket for connection {thread_id}: {e}")
 
@@ -754,7 +741,7 @@ def main():
     """
     Main function to start the YAIL server.
     """
-    global camera_thread, camera_running, active_client_threads
+    global active_client_threads
     global gen_config
     
     # Track active client threads
@@ -765,7 +752,7 @@ def main():
         logger.info("Shutting down YAIL server...")
         
         # Stop the camera thread if it's running
-        stop_camera_thread()
+        shutdown_camera()
         
         # Close the server socket
         if 'server' in locals():
@@ -789,7 +776,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
     signal.signal(signal.SIGTERM, signal_handler)  # Termination signal
     
-    # Initialize the image to send with something
+    # Initialize the image object to send with something
     initial_image = convertImageToYAIL(Image.new("L", (YAIL_W,YAIL_H)), GRAPHICS_8)
     update_yail_data(initial_image, GRAPHICS_8) #pack_shades(initial_image), GRAPHICS_8)
 
@@ -971,6 +958,14 @@ def main():
         logger.warning(f"  Error using netifaces: {e}")
     
     logger.info('='*50)
+
+    # Initialize the camera if specified
+    if args.camera:
+        if not init_camera(args.camera):
+            logger.error("Failed to initialize camera. Exiting.")
+    else:
+        # Try to initialize the default camera
+        init_camera()
 
     while True:
         # Clean up finished threads from the active_threads list
